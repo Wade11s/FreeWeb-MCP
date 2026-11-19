@@ -4,15 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ArtifactStore } from "../../src/artifacts/artifact-store.js";
+import { ArtifactOutput } from "../../src/artifacts/output.js";
 import { CrawlManager } from "../../src/crawl/crawl-manager.js";
 import { FreeWebError } from "../../src/errors.js";
-import type { CrawlProviderSnapshot, FirecrawlAdapter } from "../../src/providers/interfaces.js";
+import type { CrawlJobAdapter, CrawlJobSnapshot } from "../../src/crawl/crawl-job-adapter.js";
 import { crawlInputSchema } from "../../src/types.js";
 
-class FakeFirecrawl implements FirecrawlAdapter {
-  readonly name = "firecrawl-local" as const;
+class FakeFirecrawl implements CrawlJobAdapter {
   nextId = "provider-job-1";
-  snapshot: CrawlProviderSnapshot = { status: "scraping", total: 0, completed: 0, pages: [], errors: [] };
+  snapshot: CrawlJobSnapshot = { status: "scraping", total: 0, completed: 0, pages: [], errors: [] };
   starts: unknown[] = [];
   cancelled: string[] = [];
   reads = 0;
@@ -26,9 +26,6 @@ class FakeFirecrawl implements FirecrawlAdapter {
     if (this.cancelError) throw this.cancelError;
     this.snapshot = { ...this.snapshot, status: "cancelled" };
   }
-  async fetch(): Promise<never> { throw new Error("not used"); }
-  async map(): Promise<never> { throw new Error("not used"); }
-  async close() {}
 }
 
 let root: string;
@@ -43,7 +40,7 @@ beforeEach(async () => {
   manager = new CrawlManager({
     adapter,
     root,
-    artifacts,
+    output: new ArtifactOutput(artifacts),
     pollIntervalMs: 0,
   });
   await manager.recover();
@@ -122,7 +119,7 @@ describe("CrawlManager public seam", () => {
     await manager.status({ crawlId: started.crawlId, offset: 0, limit: 10, maxCharsPerPage: 100 });
     const readsBeforeRestart = adapter.reads;
 
-    manager = new CrawlManager({ adapter, root, artifacts, pollIntervalMs: 0 });
+    manager = new CrawlManager({ adapter, root, output: new ArtifactOutput(artifacts), pollIntervalMs: 0 });
     await manager.recover();
     const recovered = await manager.status({ crawlId: started.crawlId, offset: 0, limit: 10, maxCharsPerPage: 100 });
 
@@ -147,7 +144,7 @@ describe("CrawlManager public seam", () => {
   it("removes terminal checkpoints when their Artifact retention expires", async () => {
     let now = 1_000_000;
     artifacts = new ArtifactStore({ root, now: () => now });
-    manager = new CrawlManager({ adapter, root, artifacts, pollIntervalMs: 0, now: () => now });
+    manager = new CrawlManager({ adapter, root, output: new ArtifactOutput(artifacts), pollIntervalMs: 0, now: () => now });
     const started = await manager.start(crawlInputSchema.parse({ url: "https://example.com" }));
     adapter.snapshot = {
       status: "completed",
@@ -184,7 +181,7 @@ describe("CrawlManager public seam", () => {
   });
 
   it("reserves the active-job budget while provider start is still pending", async () => {
-    manager = new CrawlManager({ adapter, root, artifacts, pollIntervalMs: 0, maxJobs: 1 });
+    manager = new CrawlManager({ adapter, root, output: new ArtifactOutput(artifacts), pollIntervalMs: 0, maxJobs: 1 });
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     adapter.startCrawl = async (input) => {
@@ -208,7 +205,7 @@ describe("CrawlManager hardening", () => {
   const jobPath = (crawlId: string) => join(root, "crawls", crawlId, "job.json");
 
   it("caps total inline characters per status response and defers the rest to the Artifact", async () => {
-    manager = new CrawlManager({ adapter, root, artifacts, pollIntervalMs: 0, inlineTotalChars: 250 });
+    manager = new CrawlManager({ adapter, root, output: new ArtifactOutput(artifacts), pollIntervalMs: 0, inlineTotalChars: 250 });
     const started = await manager.start(crawlInputSchema.parse({ url: "https://example.com" }));
     adapter.snapshot = {
       status: "completed",
@@ -245,7 +242,7 @@ describe("CrawlManager hardening", () => {
   });
 
   it("does not exceed the inline budget even for the default start checkpoint", async () => {
-    manager = new CrawlManager({ adapter, root, artifacts, pollIntervalMs: 0, inlineTotalChars: 1000 });
+    manager = new CrawlManager({ adapter, root, output: new ArtifactOutput(artifacts), pollIntervalMs: 0, inlineTotalChars: 1000 });
     adapter.snapshot = {
       status: "scraping",
       total: 100,
@@ -297,7 +294,7 @@ describe("CrawlManager hardening", () => {
   });
 
   it("keeps checkpoints parseable under concurrent refreshes and finalization", async () => {
-    manager = new CrawlManager({ adapter, root, artifacts, pollIntervalMs: 0, inlineTotalChars: 1000 });
+    manager = new CrawlManager({ adapter, root, output: new ArtifactOutput(artifacts), pollIntervalMs: 0, inlineTotalChars: 1000 });
     const jobs = [];
     for (let index = 0; index < 3; index++) {
       adapter.snapshot = { status: "scraping", total: 0, completed: 0, pages: [], errors: [] };
@@ -379,7 +376,7 @@ describe("CrawlManager hardening", () => {
   });
 
   it("restores an evicted terminal checkpoint from disk on demand", async () => {
-    manager = new CrawlManager({ adapter, root, artifacts, pollIntervalMs: 0, maxRetainedJobs: 1 });
+    manager = new CrawlManager({ adapter, root, output: new ArtifactOutput(artifacts), pollIntervalMs: 0, maxRetainedJobs: 1 });
     adapter.snapshot = {
       status: "completed",
       total: 1,
@@ -412,7 +409,7 @@ describe("CrawlManager hardening", () => {
     let now = 1_000_000;
     artifacts = new ArtifactStore({ root, now: () => now });
     manager = new CrawlManager({
-      adapter, root, artifacts, pollIntervalMs: 0, maxRetainedJobs: 1, now: () => now,
+      adapter, root, output: new ArtifactOutput(artifacts), pollIntervalMs: 0, maxRetainedJobs: 1, now: () => now,
     });
     const completed = async (url: string) => {
       adapter.snapshot = {
@@ -483,7 +480,7 @@ describe("CrawlManager hardening", () => {
   it("cancels the provider job and removes local state when initial checkpoint persistence fails", async () => {
     const blocked = join(root, "blocked");
     await writeFile(blocked, "not a directory");
-    manager = new CrawlManager({ adapter, root: blocked, artifacts, pollIntervalMs: 0 });
+    manager = new CrawlManager({ adapter, root: blocked, output: new ArtifactOutput(artifacts), pollIntervalMs: 0 });
 
     await expect(manager.start(crawlInputSchema.parse({ url: "https://example.com" }))).rejects.toBeDefined();
     expect(adapter.cancelled).toEqual(["provider-job-1"]);
@@ -567,7 +564,7 @@ describe("CrawlManager hardening", () => {
   });
 
   it("counts structured formats toward the total inline budget", async () => {
-    manager = new CrawlManager({ adapter, root, artifacts, pollIntervalMs: 0, inlineTotalChars: 100 });
+    manager = new CrawlManager({ adapter, root, output: new ArtifactOutput(artifacts), pollIntervalMs: 0, inlineTotalChars: 100 });
     const started = await manager.start(crawlInputSchema.parse({ url: "https://example.com" }));
     adapter.snapshot = {
       status: "completed",
@@ -617,7 +614,7 @@ describe("CrawlManager hardening", () => {
     await writeFile(join(directory, "job.json"), JSON.stringify(job));
     await writeFile(join(root, "not-a-directory"), "blocked");
     const brokenArtifacts = new ArtifactStore({ root: join(root, "not-a-directory") });
-    manager = new CrawlManager({ adapter, root, artifacts: brokenArtifacts, pollIntervalMs: 0 });
+    manager = new CrawlManager({ adapter, root, output: new ArtifactOutput(brokenArtifacts), pollIntervalMs: 0 });
 
     await manager.recover();
     await expect(manager.status({ crawlId, offset: 0, limit: 10, maxCharsPerPage: 100 }))
@@ -625,7 +622,7 @@ describe("CrawlManager hardening", () => {
   });
 
   it("polls at the default multi-second interval rather than eagerly", async () => {
-    manager = new CrawlManager({ adapter, root, artifacts });
+    manager = new CrawlManager({ adapter, root, output: new ArtifactOutput(artifacts) });
     await manager.start(crawlInputSchema.parse({ url: "https://example.com" }));
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(adapter.reads).toBe(0);

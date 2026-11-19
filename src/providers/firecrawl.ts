@@ -9,7 +9,8 @@ import {
   type ProcessDeps,
   type CommandRunner,
 } from "./firecrawl-process.js";
-import type { CrawlProviderPage, CrawlProviderSnapshot, FirecrawlAdapter, SearchProvider } from "./interfaces.js";
+import type { CrawlJobAdapter, CrawlJobPage, CrawlJobSnapshot } from "../crawl/crawl-job-adapter.js";
+import { refused, SUPPORTED, type FetchMapAdapter, type ProviderPreflight, type SearchProvider } from "./interfaces.js";
 
 const LOCAL = "firecrawl-local" as const;
 const SEARCH = "firecrawl-search" as const;
@@ -28,6 +29,30 @@ const CRAWL_KEYS = [
 ];
 const SEARCH_KEYS = ["query", "limit", "provider", "fallback", "options"];
 const SUPPORTED_FETCH_FORMATS = new Set(["markdown", "html", "rawHtml", "links", "screenshot"]);
+
+/**
+ * One definition per capability rule. Firecrawl Local Fetch shares its predicate between the
+ * Router-facing preflight and direct `fetch()`. Firecrawl Search intentionally keeps two:
+ * the Router asks whether a *defined* filter would be lost, while direct `search()` keeps its
+ * historical refusal on option *key presence*. Both live here so neither path drifts.
+ */
+const SEARCH_RULES = {
+  /** Any defined TinyFish-specific filter cannot be reproduced by the search CLI. */
+  providerFilters: (input: SearchInput): boolean =>
+    Object.values(input.options ?? {}).some((value) => value !== undefined),
+  /**
+   * The direct seam keeps its historical guard: the presence of an options key is refused,
+   * even when every value is `undefined`. Only preflight looks at defined values, so the
+   * Router never skips a request the CLI would accept.
+   */
+  optionKeys: (input: SearchInput): boolean => Object.keys(input.options ?? {}).length > 0,
+} as const;
+
+const FETCH_RULES = {
+  /** The formats local serve cannot produce; among schema-valid formats only `json` remains. */
+  unsupportedFormats: (input: FetchInput): string[] =>
+    input.formats.filter((format) => !SUPPORTED_FETCH_FORMATS.has(format)),
+} as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -100,9 +125,9 @@ function assertRegexStrings(value: unknown, name: string): void {
   }
 }
 
-function normalizeCrawlPage(data: Record<string, unknown>): CrawlProviderPage {
+function normalizeCrawlPage(data: Record<string, unknown>): CrawlJobPage {
   const metadata = isRecord(data.metadata) ? data.metadata : {};
-  const page: CrawlProviderPage = {
+  const page: CrawlJobPage = {
     url: typeof data.url === "string" ? data.url : typeof metadata.url === "string" ? metadata.url : typeof metadata.sourceURL === "string" ? metadata.sourceURL : "",
     formats: normalizeFormats(data),
   };
@@ -112,16 +137,16 @@ function normalizeCrawlPage(data: Record<string, unknown>): CrawlProviderPage {
   return page;
 }
 
-function normalizeCrawlErrors(value: unknown): CrawlProviderSnapshot["errors"] {
+function normalizeCrawlErrors(value: unknown): CrawlJobSnapshot["errors"] {
   if (!Array.isArray(value)) return [];
-  const errors: CrawlProviderSnapshot["errors"] = [];
+  const errors: CrawlJobSnapshot["errors"] = [];
   for (const item of value) {
     if (!isRecord(item)) continue;
     const code = typeof item.code === "string" && item.code ? item.code : "CRAWL_ERROR";
     const message = typeof item.message === "string" && item.message
       ? item.message
       : typeof item.error === "string" ? item.error : "Crawl error";
-    const error: CrawlProviderSnapshot["errors"][number] = { code, message };
+    const error: CrawlJobSnapshot["errors"][number] = { code, message };
     if (typeof item.url === "string") error.url = item.url;
     errors.push(error);
   }
@@ -131,7 +156,7 @@ function normalizeCrawlErrors(value: unknown): CrawlProviderSnapshot["errors"] {
 /** Bound on followed crawl status pages so a compatible server cannot stream forever. */
 export const MAX_CRAWL_PAGES = 100;
 
-function normalizeCrawlSnapshot(payload: unknown): CrawlProviderSnapshot {
+function normalizeCrawlSnapshot(payload: unknown): CrawlJobSnapshot {
   if (!isRecord(payload)) throw new FreeWebError("INVALID_RESPONSE", "Firecrawl Local returned no crawl status", { provider: LOCAL });
   const rawStatus = payload.status;
   const status = rawStatus === "scraping" || rawStatus === "completed" || rawStatus === "failed" || rawStatus === "cancelled"
@@ -179,7 +204,7 @@ function resolveCrawlNext(raw: string, baseUrl: string): URL {
   return target;
 }
 
-export class FirecrawlLocalProvider implements FirecrawlAdapter {
+export class FirecrawlLocalProvider implements FetchMapAdapter, CrawlJobAdapter {
   readonly name = LOCAL;
 
   private runtime?: Promise<FirecrawlRuntime>;
@@ -236,9 +261,21 @@ export class FirecrawlLocalProvider implements FirecrawlAdapter {
     return started;
   }
 
+  inspectFetch(input: FetchInput): ProviderPreflight {
+    // `json` is the only schema-valid format local serve cannot produce.
+    if (!FETCH_RULES.unsupportedFormats(input).includes("json")) return SUPPORTED;
+    return refused(
+      "UNSUPPORTED_OPTION",
+      "Firecrawl Local does not support JSON extraction",
+      new FreeWebError("UNSUPPORTED_OPTION", "Firecrawl Local does not support JSON extraction", {
+        provider: LOCAL,
+      }),
+    );
+  }
+
   async fetch(input: FetchInput): Promise<{ results: FetchPage[]; errors: FetchOutputErrors }> {
     assertKnownKeys(input, FETCH_KEYS, "fetch");
-    const unsupported = input.formats.filter((format) => !SUPPORTED_FETCH_FORMATS.has(format));
+    const unsupported = FETCH_RULES.unsupportedFormats(input);
     if (unsupported.length > 0) {
       throw new FreeWebError("UNSUPPORTED_FORMAT", `Firecrawl Local cannot produce: ${unsupported.join(", ")}`, {
         provider: LOCAL,
@@ -346,7 +383,7 @@ export class FirecrawlLocalProvider implements FirecrawlAdapter {
     return { id: payload.id };
   }
 
-  async getCrawl(id: string): Promise<CrawlProviderSnapshot> {
+  async getCrawl(id: string): Promise<CrawlJobSnapshot> {
     const runtime = await this.getRuntime();
     const firstPath = `/v2/crawl/${encodeURIComponent(id)}`;
     const seen = new Set<string>([new URL(firstPath, runtime.baseUrl).href]);
@@ -478,12 +515,23 @@ export class FirecrawlSearchProvider implements SearchProvider {
     private readonly deps: Pick<FirecrawlProviderDeps, "commandRunner"> = {},
   ) {}
 
+  inspectSearch(input: SearchInput): ProviderPreflight {
+    if (!SEARCH_RULES.providerFilters(input)) return SUPPORTED;
+    return refused(
+      "FALLBACK_UNSUPPORTED",
+      "Provider-specific filters are incompatible",
+      new FreeWebError("FALLBACK_UNSUPPORTED", "Firecrawl Search cannot preserve TinyFish-specific filters", {
+        provider: SEARCH,
+      }),
+    );
+  }
+
   async search(input: SearchInput): Promise<{ results: SearchOutput["results"] }> {
     assertKnownKeys(input, SEARCH_KEYS, "search", SEARCH);
-    if (input.options && Object.keys(input.options).length > 0) {
+    if (SEARCH_RULES.optionKeys(input)) {
       throw new FreeWebError("UNSUPPORTED_OPTION", "Firecrawl search does not support MCP search options", {
         provider: SEARCH,
-        details: { options: Object.keys(input.options) },
+        details: { options: Object.keys(input.options ?? {}) },
       });
     }
     if (!this.config.searchFallback) {

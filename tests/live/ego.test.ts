@@ -102,14 +102,14 @@ describe.skipIf(!runEgo)("ego-lite live managed and unrestricted Browse", () => 
     expect(fetched.result).toMatchObject({ ok: true, status: 200 });
     expect(JSON.stringify(fetched.result)).toContain("hello from page fetch");
 
-    const screenshot = await runtime.browse({
+    const screenshot = await runtime.managedBrowseToolCall({
       action: "call",
       browseId,
       page: "p1",
       method: "page.screenshot",
       args: [],
     });
-    const image = await runtime.browseScreenshot(screenshot.result);
+    const image = screenshot.content.find((block) => block.type === "image");
     expect(image?.type).toBe("image");
 
     const closed = await runtime.browse({ action: "close", browseId, page: "p1" });
