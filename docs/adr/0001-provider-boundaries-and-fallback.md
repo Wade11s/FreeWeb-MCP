@@ -1,0 +1,3 @@
+# Provider boundaries and fallback
+
+FreeWeb-MCP uses Firecrawl Local for local Fetch/Crawl/Map, TinyFish Search/Fetch only with an explicitly confirmed no-wallet-spending API key, keyless Firecrawl Search only as a separately enabled fallback, and ego-lite for Browse. A single router owns provider attempts so unsupported semantics, outcome-uncertain timeouts, empty results and per-URL partial failures cannot silently trigger duplicate or lossy cloud calls; Firecrawl's local serve remains at FIRECRAWL_CLOUD=off while its optional Search subprocess alone uses FIRECRAWL_CLOUD=search. These boundaries preserve the project's Free guarantee while retaining useful degradation, and would be expensive to retrofit if each tool called providers independently.

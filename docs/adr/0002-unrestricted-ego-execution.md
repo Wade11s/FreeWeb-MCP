@@ -1,0 +1,3 @@
+# Unrestricted ego execution
+
+FreeWeb-MCP exposes ego-lite through managed native calls, page evaluation, and an opt-in unrestricted Node.js tool. Managed calls own TaskSpace rounds and enforce their documented wrapper constraints, page evaluation runs in the Page rather than as Node source, and unrestricted scripts manage their own lifecycle with full Node/CDP/OS-user authority. We deliberately do not describe unrestricted execution as sandboxed, read-only, confined to a Space, or covered by managed URL/file/Profile guarantees: those claims would be false because arbitrary Node code can bypass them. Separating these execution models preserves the requested native capabilities without hiding the trust decision from the installer and MCP client.

@@ -1,0 +1,18 @@
+{
+  "tinyfish": {
+    "freeOnlyConfirmed": false
+  },
+  "firecrawl": {
+    "binary": "firecrawl-local",
+    "port": 0,
+    "allowPrivate": false,
+    "searchFallback": false
+  },
+  "ego": {
+    "binary": "ego-browser",
+    "unrestricted": false,
+    "defaultProfile": "Default",
+    "allowedProfiles": ["Default"],
+    "allowPrivate": false
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "name": "freeweb-mcp",
+  "version": "0.1.0",
+  "description": "Free-first local Web MCP using Firecrawl Local, TinyFish and ego-lite",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "freeweb-mcp": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "GLOSSARY.md",
+    "docs/adr",
+    "docs/providers",
+    "docs/architecture.md",
+    "docs/security.md",
+    "docs/testing.md",
+    "docs/review.md",
+    "config.example.json"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
+    "pretest": "npm run build",
+    "test": "vitest run",
+    "test:unit": "vitest run tests/unit",
+    "pretest:integration": "npm run build",
+    "test:integration": "vitest run tests/integration",
+    "test:live": "vitest run tests/live",
+    "check": "npm run typecheck && npm run test:unit && npm run test:integration && npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.4.0",
+    "@tiny-fish/sdk": "^0.11.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.4.0",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vitest": "^5.1.1"
+  }
+}
