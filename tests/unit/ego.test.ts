@@ -372,6 +372,28 @@ function taskPayload(spaceId: number, ownership: string, pages: string[] = ["p1"
   };
 }
 
+/**
+ * The controlled ego-lite terminal-handoff fixture: a clean exit whose only output is the
+ * owned user-control hard-stop guidance, because a handed-off round discards its buffer.
+ */
+const HANDOFF_HARD_STOP = [
+  "Control of this task space is with the user, either through task.handOff() or a takeover in the browser, so browser commands are paused.",
+  "This is a hard stop, not an obstacle to route around — do not retry and do not take control back on your own.",
+  "Wait until the user explicitly asks you to continue, then take control back and resume:",
+  " const task = await takeOverTaskSpace(spaceId)",
+].join("\n");
+
+function hardStopResult(overrides: Partial<EgoRunResult> = {}): EgoRunResult {
+  return {
+    exitCode: 0,
+    stdout: `${HANDOFF_HARD_STOP}\n`,
+    stderr: "",
+    durationMs: 8,
+    timedOut: false,
+    ...overrides,
+  };
+}
+
 function finishPayload(spaceId: number, ownership = "user"): EgoPayload {
   return {
     ok: true,
@@ -556,23 +578,153 @@ describe("EgoProvider managed browse", () => {
     expect(runner.calls[1].script).toContain("await task.finish({ keep: [\"p1\"] })");
   });
 
+  it("treats a confirmed user-control hard stop as a successful handoff that persists ownership", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new FakeRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openTask(provider, runner);
+
+    runner.reset();
+    runner.queue(() => hardStopResult());
+    const handoff = await provider.browse({ action: "handoff", browseId, page: "p1" });
+    expect(handoff).toMatchObject({ browseId, spaceId: 7, status: "handoff", result: { handedOff: true }, pages: ["p1"] });
+    expect(handoff.warnings).toBeUndefined();
+    expect(runner.calls).toHaveLength(1);
+    expect(runner.calls[0].script).toContain("await task.handOff()");
+    expect(runner.calls[0].script).not.toContain("task.finish(");
+
+    const registry = JSON.parse(await readFile(join(dataDir, "browse", "tasks.json"), "utf8")) as {
+      tasks: Record<string, { spaceId: number; status: string; ownership: string }>;
+    };
+    expect(Object.keys(registry.tasks)).toEqual([browseId]);
+    expect(registry.tasks[browseId]).toMatchObject({ spaceId: 7, status: "handoff", ownership: "agentDelegatedToUser" });
+
+    // Status after handoff reads the serialized state and never runs an ego call.
+    runner.reset();
+    const status = await provider.browse({ action: "status", browseId, page: "p1" });
+    expect(status).toMatchObject({ browseId, spaceId: 7, status: "handoff", pages: ["p1"] });
+    expect(status.result).toEqual({ status: "handoff", ownership: "agentDelegatedToUser", pages: ["p1"] });
+    expect(runner.calls).toHaveLength(0);
+
+    // Everything that targets the Page stays blocked until the explicit resume.
+    await expect(provider.browse({ action: "call", browseId, page: "p1", method: "page.snapshot", args: [] })).rejects.toMatchObject({ code: "EGO_USER_CONTROL_REQUIRED" });
+    await expect(provider.evaluate({ browseId, page: "p1", script: "document.title" })).rejects.toMatchObject({ code: "EGO_USER_CONTROL_REQUIRED" });
+    expect(runner.calls).toHaveLength(0);
+  });
+
+  it("keeps ambiguous handoff results as errors without marking the task handed off", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new FakeRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openTask(provider, runner);
+
+    const registry = JSON.parse(await readFile(join(dataDir, "browse", "tasks.json"), "utf8")) as {
+      tasks: Record<string, { spaceId: number; status: string; ownership: string }>;
+    };
+    const ownershipBeforeHandoff = registry.tasks[browseId]!.ownership;
+
+    const cases: Array<{ label: string; result: EgoRunResult; code: string }> = [
+      {
+        label: "nonzero exit with the handoff diagnostic",
+        result: hardStopResult({ exitCode: 1 }),
+        code: "EGO_RUN_FAILED",
+      },
+      {
+        label: "timeout with the handoff diagnostic",
+        result: hardStopResult({ exitCode: null, signal: "SIGKILL", timedOut: true }),
+        code: "EGO_TIMEOUT",
+      },
+      {
+        label: "clean exit with unrelated missing output",
+        result: { exitCode: 0, stdout: "", stderr: "session closed\n", durationMs: 4, timedOut: false },
+        code: "EGO_NO_RESULT",
+      },
+      {
+        label: "clean exit with an unrecognized hard-stop diagnostic",
+        result: { exitCode: 0, stdout: "", stderr: "The user now controls this task space.\nResume only after the user confirms, using takeOverTaskSpace(spaceId).\n", durationMs: 4, timedOut: false },
+        code: "EGO_NO_RESULT",
+      },
+    ];
+
+    for (const testCase of cases) {
+      runner.reset();
+      runner.queue(() => testCase.result);
+      await expect(
+        provider.browse({ action: "handoff", browseId, page: "p1" }),
+        testCase.label,
+      ).rejects.toMatchObject({ code: testCase.code });
+
+      const registry = JSON.parse(await readFile(join(dataDir, "browse", "tasks.json"), "utf8")) as {
+        tasks: Record<string, { spaceId: number; status: string; ownership: string }>;
+      };
+      expect(Object.keys(registry.tasks), testCase.label).toEqual([browseId]);
+      expect(registry.tasks[browseId], testCase.label).toMatchObject({
+        spaceId: 7,
+        status: "active",
+        ownership: ownershipBeforeHandoff,
+      });
+    }
+  });
+
+  it("does not weaken generic missing-payload handling for other managed operations", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new FakeRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openTask(provider, runner);
+
+    runner.reset();
+    runner.queue(
+      () => hardStopResult(),
+      () => hardStopResult(),
+      () => hardStopResult(),
+    );
+    await expect(provider.browse({ action: "status", browseId, page: "p1" })).rejects.toMatchObject({ code: "EGO_NO_RESULT" });
+    await expect(provider.browse({ action: "call", browseId, page: "p1", method: "page.snapshot", args: [] })).rejects.toMatchObject({ code: "EGO_NO_RESULT" });
+    await expect(provider.evaluate({ browseId, page: "p1", script: "document.title" })).rejects.toMatchObject({ code: "EGO_NO_RESULT" });
+
+    const registry = JSON.parse(await readFile(join(dataDir, "browse", "tasks.json"), "utf8")) as {
+      tasks: Record<string, { status: string; ownership: string }>;
+    };
+    // The generic error path must not flip a working registration into handoff.
+    expect(registry.tasks[browseId]).toMatchObject({ status: "active" });
+    expect(registry.tasks[browseId]!.ownership).not.toBe("agentDelegatedToUser");
+  });
+
   it("requires an explicit resume before work can take over a handed-off Space", async () => {
     const config = await makeConfig(dataDir);
     const runner = new FakeRunner();
     const provider = new EgoProvider(config, { runner });
     const browseId = await openTask(provider, runner);
     runner.reset();
-    runner.queue((request) => egoResult(request, {
-      ...taskPayload(7, "agentDelegatedToUser"),
-      value: { handedOff: true },
-    }));
+    runner.queue(() => hardStopResult());
     await provider.browse({ action: "handoff", browseId, page: "p1" });
     runner.reset();
 
-    await expect(provider.browse({ action: "status", browseId, page: "p1" })).rejects.toMatchObject({ code: "EGO_USER_CONTROL_REQUIRED" });
+    // Status stays readable without resuming, but Page-targeted work does not.
     await expect(provider.browse({ action: "call", browseId, page: "p1", method: "page.snapshot", args: [] })).rejects.toMatchObject({ code: "EGO_USER_CONTROL_REQUIRED" });
     await expect(provider.evaluate({ browseId, page: "p1", script: "document.title" })).rejects.toMatchObject({ code: "EGO_USER_CONTROL_REQUIRED" });
     expect(runner.calls).toHaveLength(0);
+
+    runner.queue(
+      (request) => egoResult(request, taskPayload(7, "agent")),
+      (request) => egoResult(request, finishPayload(7)),
+    );
+    const resumed = await provider.browse({ action: "resume", browseId, page: "p1" });
+    expect(resumed.status).toBe("ok");
+    expect(runner.calls[0].script).toContain("takeOverTaskSpace");
+
+    const registry = JSON.parse(await readFile(join(dataDir, "browse", "tasks.json"), "utf8")) as {
+      tasks: Record<string, { spaceId: number; status: string; ownership: string }>;
+    };
+    expect(registry.tasks[browseId]).toMatchObject({ spaceId: 7, status: "active" });
+    expect(registry.tasks[browseId]!.ownership).not.toBe("agentDelegatedToUser");
+
+    runner.reset();
+    runner.queue(
+      (request) => egoResult(request, taskPayload(7, "agent")),
+      (request) => egoResult(request, finishPayload(7)),
+    );
+    await expect(provider.browse({ action: "call", browseId, page: "p1", method: "page.snapshot", args: [] })).resolves.toMatchObject({ status: "ok" });
   });
 
   it("closes with keep:[] and forgets only that managed task", async () => {
