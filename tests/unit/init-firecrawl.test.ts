@@ -51,7 +51,13 @@ describe("Firecrawl init detection boundary", () => {
 
     const result = await component.detect({ FIRECRAWL_LOCAL_BIN: binary }, { status: "absent" });
 
-    expect(result).toEqual({ installed: true, binary, source: "env", certified: false });
+    expect(result).toEqual({
+      installed: true,
+      binary,
+      source: "env",
+      certified: false,
+      configPatches: [{ setting: "firecrawl.binary", value: binary }],
+    });
     expect(launches).toBe(0);
   });
 });
@@ -123,7 +129,7 @@ describe("Firecrawl certified version classification", () => {
         commandRunner: async () => ({ exitCode: 0, stdout: `${testCase.reported}\n`, stderr: "" }),
         startRuntime: async () => runtime(),
       });
-      const result = await component.execute({ io, env: {}, detection: detection("/fake/firecrawl-local") });
+      const result = await component.execute({ io, env: {}, detection: detection("/fake/firecrawl-local"), appliedRepairs: [] });
       expect(result.outcome, testCase.reported).toBe("Installed");
       expect(result.warnings.some((warning) => warning.code === "Uncertified"), testCase.reported).toBe(!testCase.certified);
     }

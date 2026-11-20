@@ -3,17 +3,18 @@
  *
  * Every Initialization run classifies each component into exactly one
  * outcome and derives its exit status from these types. Later
- * Initialization tickets (Firecrawl installation, TinyFish, ego-lite) must
- * extend this module — adding component ids to `InitComponentId` and
- * registering components — rather than inventing parallel outcome types.
+ * Initialization tickets (Firecrawl installation, TinyFish, ego-lite) reuse
+ * these outcomes and register components rather than inventing parallel
+ * outcome types.
  */
 
 /**
- * Components known to Initialization. Provider components live in
- * `src/init/components/`; `configuration` is the base configuration step
- * owned by the orchestrator.
+ * Provider components live in `src/init/components/`; `configuration` is the
+ * base configuration step owned by the orchestrator. Registration is the
+ * only production change a new component needs, so this is not a closed
+ * orchestrator-owned union.
  */
-export type InitComponentId = "firecrawl" | "configuration";
+export type InitComponentId = string;
 
 /**
  * The five Initialization outcome categories. `Uncertified` is deliberately
@@ -38,6 +39,8 @@ export interface InitComponentResult {
   readonly selected: boolean;
   readonly warnings: readonly InitWarning[];
   readonly detail: string;
+  /** Non-secret settings persisted by the shared post-execution write. */
+  readonly configPatches?: readonly import("./component.js").InitConfigPatch[];
 }
 
 /** Classified summary of a whole Initialization run. */

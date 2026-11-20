@@ -1,4 +1,4 @@
-import type { InitDetection } from "./component.js";
+import type { InitConfigRepair, InitDetection } from "./component.js";
 import { completeExistingConfig, highRiskSettingWarnings, type ConfigClassification } from "./config-store.js";
 import type { InitComponentId, InitWarning } from "./outcomes.js";
 
@@ -13,13 +13,8 @@ export interface InitPlanItem {
   readonly selected: boolean;
 }
 
-/** An explicit old → new configuration value change awaiting its own confirmation. */
-export interface InitPathRepair {
-  readonly component: InitComponentId;
-  readonly setting: string;
-  readonly oldValue: string;
-  readonly newValue: string;
-}
+/** Backward-compatible name for a component-proposed configuration repair. */
+export type InitPathRepair = InitConfigRepair;
 
 export interface InitPlanContext {
   readonly configPath: string;
@@ -33,31 +28,22 @@ export interface InitPlanContext {
 export interface InitPlan {
   readonly items: readonly InitPlanItem[];
   readonly warnings: readonly InitWarning[];
-  readonly repairs: readonly InitPathRepair[];
+  readonly repairs: readonly InitConfigRepair[];
   /** Present only when the configuration is damaged and recovery is the plan. */
   readonly recovery: { readonly reason: string } | null;
 }
 
 /**
- * Builds the Initialization plan from the current environment and existing
- * configuration. Pure data shaping: detection already happened, and nothing
- * here performs a side effect.
+ * Builds the Initialization plan from generic component contributions. Pure
+ * data shaping: detection already happened, and nothing here has side effects.
  */
 export function buildInitPlan(context: InitPlanContext): InitPlan {
   const { configPath, classification, detections, componentItems } = context;
-  const warnings: InitWarning[] = [];
-  const repairs: InitPathRepair[] = [];
+  const detected = [...detections.values()];
+  const warnings: InitWarning[] = detected.flatMap((detection) => detection.warnings ?? []);
+  const repairs: InitConfigRepair[] = detected.flatMap((detection) => detection.repairs ?? []);
+  const detectionPatches = detected.flatMap((detection) => detection.configPatches ?? []);
   const items: InitPlanItem[] = [...componentItems];
-
-  const firecrawl = detections.get("firecrawl");
-  if (firecrawl?.installed && firecrawl.version !== undefined && !firecrawl.certified) {
-    warnings.push({
-      code: "Uncertified",
-      message: firecrawl.version
-        ? `Firecrawl Local reports '${firecrawl.version}', which is not the certified 0.1.0 release; it will be left untouched`
-        : "Firecrawl Local's version could not be determined; the existing installation will be left untouched",
-    });
-  }
 
   if (classification.status === "malformed" || classification.status === "schema-invalid") {
     const reason = classification.status === "malformed"
@@ -70,37 +56,29 @@ export function buildInitPlan(context: InitPlanContext): InitPlan {
       required: true,
       selected: true,
     });
-    return { items, warnings, repairs, recovery: { reason } };
+    return { items, warnings, repairs: [], recovery: { reason } };
   }
 
   if (classification.status === "absent") {
     items.push({
       component: "configuration",
       action: "write",
-      description: `write new configuration with conservative defaults (no private access, no Search Fallback, no Unrestricted Browse) to ${configPath}${firecrawl?.installed && firecrawl.binary ? ` and record ${firecrawl.binary}` : ""}`,
+      description: `write new configuration with conservative defaults (no private access, no Search Fallback, no Unrestricted Browse) to ${configPath}${detectionPatches.length > 0 ? " and apply detected component settings" : ""}`,
       required: true,
       selected: true,
     });
-    return { items, warnings, repairs, recovery: null };
+    return { items, warnings, repairs: [], recovery: null };
   }
 
   warnings.push(...highRiskSettingWarnings(classification.raw));
   const completed = completeExistingConfig(classification.raw);
-  if (firecrawl?.staleConfiguredPath && firecrawl.installed && firecrawl.binary) {
-    repairs.push({
-      component: "firecrawl",
-      setting: "firecrawl.binary",
-      oldValue: firecrawl.staleConfiguredPath,
-      newValue: firecrawl.binary,
-    });
-  }
-  if (completed.added.length > 0 || repairs.length > 0) {
+  if (completed.added.length > 0 || repairs.length > 0 || detectionPatches.length > 0) {
     items.push({
       component: "configuration",
       action: "write",
       description: repairs.length > 0
-        ? `apply confirmed repairs and add ${completed.added.length} missing safe default${completed.added.length === 1 ? "" : "s"} to ${configPath}; every explicit value is preserved`
-        : `add ${completed.added.length} missing safe default${completed.added.length === 1 ? "" : "s"} to ${configPath}; every explicit value is preserved`,
+        ? `apply confirmed repairs and component settings, and add ${completed.added.length} missing safe default${completed.added.length === 1 ? "" : "s"} to ${configPath}; every explicit value is preserved`
+        : `apply component settings and add ${completed.added.length} missing safe default${completed.added.length === 1 ? "" : "s"} to ${configPath}; every explicit value is preserved`,
       required: true,
       selected: true,
     });

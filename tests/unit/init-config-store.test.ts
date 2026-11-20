@@ -57,7 +57,7 @@ describe("config classification", () => {
 
 describe("new configuration defaults", () => {
   it("uses conservative schema defaults with no resolved binary", () => {
-    const file = newConfigFile({});
+    const file = newConfigFile();
     expect(file.firecrawl.allowPrivate).toBe(false);
     expect(file.firecrawl.searchFallback).toBe(false);
     expect(file.ego.unrestricted).toBe(false);
@@ -66,8 +66,8 @@ describe("new configuration defaults", () => {
     expect(file.firecrawl.host).toBe("127.0.0.1");
   });
 
-  it("records the resolved firecrawl binary path", () => {
-    expect(newConfigFile({ firecrawlBinary: "/opt/firecrawl-local" }).firecrawl.binary).toBe("/opt/firecrawl-local");
+  it("uses the runtime default binary until a component contributes a resolved path", () => {
+    expect(newConfigFile().firecrawl.binary).toBe("firecrawl-local");
   });
 });
 
@@ -109,10 +109,10 @@ describe("existing configuration completion", () => {
   });
 
   it("sets a dotted repair path on a copy", () => {
-    const merged = newConfigFile({ firecrawlBinary: "/old" }) as unknown as Record<string, unknown>;
+    const merged = newConfigFile() as unknown as Record<string, unknown>;
     const repaired = setPath(merged, "firecrawl.binary", "/new");
     expect((repaired.firecrawl as { binary: string }).binary).toBe("/new");
-    expect((merged.firecrawl as { binary: string }).binary).toBe("/old");
+    expect((merged.firecrawl as { binary: string }).binary).toBe("firecrawl-local");
   });
 });
 
@@ -120,7 +120,7 @@ describe("atomic configuration writes", () => {
   it("writes complete JSON with mode 0600 inside a 0700 directory and leaves no temp files", async () => {
     const store = new ConfigStore();
     const path = join(root, "config", "config.json");
-    await store.write(path, newConfigFile({}));
+    await store.write(path, newConfigFile());
     const raw = JSON.parse(await readFile(path, "utf8"));
     expect(raw.firecrawl.allowPrivate).toBe(false);
     if (process.platform !== "win32") {
@@ -141,7 +141,7 @@ describe("atomic configuration writes", () => {
         throw new Error("simulated interruption: rename refused");
       },
     };
-    await expect(new ConfigStore(interrupted).write(path, newConfigFile({}))).rejects.toMatchObject({
+    await expect(new ConfigStore(interrupted).write(path, newConfigFile())).rejects.toMatchObject({
       code: "INIT_WRITE_FAILED",
     });
     expect(await readFile(path, "utf8")).toBe(original);
@@ -162,7 +162,7 @@ describe("atomic configuration writes", () => {
         close: async () => {},
       }),
     };
-    await expect(new ConfigStore(interrupted).write(path, newConfigFile({}))).rejects.toMatchObject({
+    await expect(new ConfigStore(interrupted).write(path, newConfigFile())).rejects.toMatchObject({
       code: "INIT_WRITE_FAILED",
     });
     expect(await readFile(path, "utf8")).toBe(original);
@@ -210,7 +210,7 @@ describe("permissions on an existing file are re-asserted by replacement", () =>
     const path = configPath();
     await writeFile(path, "{}");
     await chmod(path, 0o644);
-    await store.write(path, newConfigFile({}));
+    await store.write(path, newConfigFile());
     if (process.platform !== "win32") {
       const { stat } = await import("node:fs/promises");
       expect((await stat(path)).mode & 0o777).toBe(0o600);
@@ -223,7 +223,7 @@ describe("permissions on an existing file are re-asserted by replacement", () =>
     const path = join(directory, "config.json");
     await mkdir(directory, { recursive: true, mode: 0o755 });
     await chmod(directory, 0o755);
-    await store.write(path, newConfigFile({}));
+    await store.write(path, newConfigFile());
     if (process.platform !== "win32") {
       const { stat } = await import("node:fs/promises");
       expect((await stat(directory)).mode & 0o777).toBe(0o700);

@@ -44,6 +44,28 @@ export function createFirecrawlComponent(deps: FirecrawlComponentDeps = {}): Ini
       : undefined;
     const configured = classification.status === "ok" ? explicitConfiguredBinary(classification.raw) : undefined;
 
+    // Detection contributes configuration declaratively. New/rebuilt files
+    // and files with no explicit binary get a patch; an explicit stale path
+    // gets an individually confirmed old → new repair instead.
+    const contribute = (detection: InitDetection): InitDetection => {
+      const configPatches = detection.installed && detection.binary && (classification.status !== "ok" || !configured)
+        ? [{ setting: "firecrawl.binary", value: detection.binary }]
+        : [];
+      const repairs = classification.status === "ok" && detection.staleConfiguredPath && detection.installed && detection.binary
+        ? [{
+            component: "firecrawl",
+            setting: "firecrawl.binary",
+            oldValue: detection.staleConfiguredPath,
+            newValue: detection.binary,
+          }]
+        : [];
+      return {
+        ...detection,
+        ...(configPatches.length > 0 ? { configPatches } : {}),
+        ...(repairs.length > 0 ? { repairs } : {}),
+      };
+    };
+
     // Detection is filesystem-only. Even a bounded --version probe launches
     // the provider, so it belongs to execute() after plan confirmation.
     // The runtime resolution order is env override, then configured value,
@@ -52,28 +74,28 @@ export function createFirecrawlComponent(deps: FirecrawlComponentDeps = {}): Ini
     if (envBinary) {
       const resolved = await locateBinary(envBinary, env, fs);
       if (!resolved) {
-        return { installed: false, certified: false, notes: [`FIRECRAWL_LOCAL_BIN does not resolve to an executable file: ${envBinary}`] };
+        return contribute({ installed: false, certified: false, notes: [`FIRECRAWL_LOCAL_BIN does not resolve to an executable file: ${envBinary}`] });
       }
       const configuredPath = configured && !(await locateBinary(configured, env, fs)) ? configured : undefined;
-      return {
+      return contribute({
         installed: true,
         binary: resolved,
         source: "env",
         certified: false,
         ...(configuredPath ? { staleConfiguredPath: configuredPath } : {}),
-      };
+      });
     }
     if (configured) {
       const resolved = await locateBinary(configured, env, fs);
-      if (resolved) return { installed: true, binary: resolved, source: "config", certified: false };
+      if (resolved) return contribute({ installed: true, binary: resolved, source: "config", certified: false });
       const onPath = await locateBinary(DEFAULT_BINARY_NAME, env, fs);
-      if (onPath) return { installed: true, binary: onPath, source: "path", certified: false, staleConfiguredPath: configured };
-      return { installed: false, certified: false, staleConfiguredPath: configured };
+      if (onPath) return contribute({ installed: true, binary: onPath, source: "path", certified: false, staleConfiguredPath: configured });
+      return contribute({ installed: false, certified: false, staleConfiguredPath: configured });
     }
     const onPath = await locateBinary(DEFAULT_BINARY_NAME, env, fs);
-    return onPath
+    return contribute(onPath
       ? { installed: true, binary: onPath, source: "path", certified: false }
-      : { installed: false, certified: false };
+      : { installed: false, certified: false });
   };
 
   const plan = (detection: InitDetection): readonly InitPlanItem[] =>
@@ -139,7 +161,10 @@ export function createFirecrawlComponent(deps: FirecrawlComponentDeps = {}): Ini
         detail: `not installed; install it manually per the official local quickstart (${LOCAL_QUICKSTART}), then rerun init. Automated installation arrives in a later release.${notes}`,
       };
     }
-    const binary = input.binary ?? detection.binary!;
+    const binaryRepair = input.appliedRepairs.find((repair) => repair.setting === "firecrawl.binary");
+    const binary = typeof binaryRepair?.newValue === "string"
+      ? binaryRepair.newValue
+      : detection.staleConfiguredPath ?? detection.binary!;
     const probe = await runner({
       command: binary,
       args: ["--version"],

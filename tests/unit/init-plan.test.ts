@@ -33,12 +33,14 @@ function plan(classification: ConfigClassification, firecrawl = detection()) {
 
 describe("init plan construction", () => {
   it("plans verification plus a conservative configuration write for an absent config", () => {
-    const result = plan({ status: "absent" });
+    const result = plan({ status: "absent" }, detection({
+      configPatches: [{ setting: "firecrawl.binary", value: "/bin/firecrawl-local" }],
+    }));
     expect(result.recovery).toBeNull();
     expect(result.items.map((item) => item.action)).toEqual(["verify", "write"]);
     expect(result.items[1]!.description).toContain("conservative defaults");
     expect(result.items[1]!.description).toContain("/cfg/config.json");
-    expect(result.items[1]!.description).toContain("/bin/firecrawl-local");
+    expect(result.items[1]!.description).toContain("detected component settings");
     expect(result.warnings).toEqual([]);
     expect(result.repairs).toEqual([]);
   });
@@ -82,7 +84,11 @@ describe("init plan construction", () => {
   });
 
   it("carries an uncertified detection into plan warnings", () => {
-    const result = plan({ status: "absent" }, detection({ version: "firecrawl-local 9.9.9", certified: false }));
+    const result = plan({ status: "absent" }, detection({
+      version: "firecrawl-local 9.9.9",
+      certified: false,
+      warnings: [{ code: "Uncertified", message: "Firecrawl Local reports 9.9.9" }],
+    }));
     expect(result.warnings.map((warning) => warning.code)).toEqual(["Uncertified"]);
     expect(result.warnings[0]!.message).toContain("9.9.9");
   });
@@ -90,7 +96,16 @@ describe("init plan construction", () => {
   it("proposes an old-to-new repair for a stale configured binary path", () => {
     const result = plan(
       { status: "ok", raw: { firecrawl: { binary: "/gone/firecrawl-local" } } },
-      detection({ source: "path", staleConfiguredPath: "/gone/firecrawl-local" }),
+      detection({
+        source: "path",
+        staleConfiguredPath: "/gone/firecrawl-local",
+        repairs: [{
+          component: "firecrawl",
+          setting: "firecrawl.binary",
+          oldValue: "/gone/firecrawl-local",
+          newValue: "/bin/firecrawl-local",
+        }],
+      }),
     );
     expect(result.repairs).toEqual([{
       component: "firecrawl",

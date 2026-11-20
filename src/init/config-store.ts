@@ -67,15 +67,12 @@ export function defaultConfigFile(): ConfigFile {
 }
 
 /**
- * New configuration: conservative schema defaults (no private-network
- * access, no Search Fallback, no Unrestricted Browse) plus resolved absolute
- * provider binary paths where a binary was detected.
+ * New configuration with conservative schema defaults (no private-network
+ * access, no Search Fallback, no Unrestricted Browse). Components contribute
+ * provider settings separately through the generic init patch contract.
  */
-export function newConfigFile(resolved: { readonly firecrawlBinary?: string }): ConfigFile {
-  const file = defaultConfigFile();
-  return resolved.firecrawlBinary
-    ? { ...file, firecrawl: { ...file.firecrawl, binary: resolved.firecrawlBinary } }
-    : file;
+export function newConfigFile(): ConfigFile {
+  return defaultConfigFile();
 }
 
 export interface CompletedConfig {
@@ -138,7 +135,7 @@ function getPath(value: Record<string, unknown>, path: string): unknown {
 }
 
 /** Returns a copy of `value` with the dotted `path` set to `replacement`. */
-export function setPath<T extends Record<string, unknown>>(value: T, path: string, replacement: string): T {
+export function setPath<T extends Record<string, unknown>>(value: T, path: string, replacement: unknown): T {
   const keys = path.split(".");
   const clone: Record<string, unknown> = { ...value };
   let cursor: Record<string, unknown> = clone;

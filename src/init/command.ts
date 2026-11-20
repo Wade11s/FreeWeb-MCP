@@ -1,7 +1,7 @@
 import { defaultConfigPath, loadConfig, type AppConfig } from "../config.js";
 import { runDoctor, type DoctorCheck } from "../doctor.js";
-import { createFirecrawlComponent } from "./components/firecrawl.js";
-import type { InitComponent, InitDetection, InitTimeouts } from "./component.js";
+import { registeredInitComponents } from "./components/registry.js";
+import type { InitComponent, InitConfigPatch, InitConfigRepair, InitConfigValue, InitDetection, InitTimeouts } from "./component.js";
 import {
   ConfigStore,
   completeExistingConfig,
@@ -11,8 +11,9 @@ import {
   type ConfigClassification,
 } from "./config-store.js";
 import { initRunSummary, type InitComponentId, type InitComponentResult, type InitWarning } from "./outcomes.js";
-import { buildInitPlan, type InitPathRepair, type InitPlanItem } from "./plan.js";
+import { buildInitPlan, type InitPlanItem } from "./plan.js";
 import type { InitIo } from "./prompt.js";
+import { redactInitIo } from "./redaction.js";
 
 export interface InitDeps {
   readonly env: NodeJS.ProcessEnv;
@@ -29,7 +30,7 @@ export function defaultInitDeps(env: NodeJS.ProcessEnv = process.env): InitDeps 
   return {
     env,
     configPath: defaultConfigPath(env),
-    components: [createFirecrawlComponent()],
+    components: registeredInitComponents(),
     store: new ConfigStore(),
     runDoctor,
     loadAppConfig: (options) => loadConfig(options),
@@ -40,11 +41,9 @@ const CONFIGURATION_LABEL = "Configuration";
 const DEFAULT_TIMEOUTS: InitTimeouts = { startupTimeoutMs: 30_000, shutdownTimeoutMs: 5_000 };
 
 /**
- * The Initialization orchestrator: plan → confirm → execute per component →
- * write configuration → doctor → classified summary → exit code. It never
- * starts the MCP server and never reads or writes other MCP clients'
- * configurations; completion guidance points at the separate print-config
- * command.
+ * The Initialization orchestrator: plan → confirm → execute every component →
+ * apply all configuration contributions in one write → doctor → summary. It
+ * never starts the MCP server or touches other MCP clients' configurations.
  */
 export async function runInit(io: InitIo, deps: InitDeps): Promise<number> {
   // A non-TTY invocation stops before any read, write, installation, or
@@ -54,6 +53,10 @@ export async function runInit(io: InitIo, deps: InitDeps): Promise<number> {
     io.errorLine("Run it from an interactive shell. There is no unattended mode.");
     return 1;
   }
+
+  // Every component-controlled display field and repair prompt crosses this
+  // boundary. Components cannot accidentally print an environment credential.
+  io = redactInitIo(io, deps.env);
 
   // Read-only phase: classify configuration and resolve provider binaries
   // without launching providers. Probes and verification wait for consent.
@@ -90,7 +93,7 @@ export async function runInit(io: InitIo, deps: InitDeps): Promise<number> {
     if (plan.repairs.length > 0) {
       io.writeLine("Repair proposals (each is applied only after its own confirmation):");
       for (const repair of plan.repairs) {
-        io.writeLine(`  - ${repair.setting}: ${repair.oldValue} -> ${repair.newValue}`);
+        io.writeLine(`  - ${repair.setting}: ${displayConfigValue(repair.oldValue)} -> ${displayConfigValue(repair.newValue)}`);
       }
     }
     if (!(await io.prompt.confirm("Proceed with this plan? [y/N]"))) {
@@ -99,57 +102,48 @@ export async function runInit(io: InitIo, deps: InitDeps): Promise<number> {
     }
   }
 
-  const appliedRepairs: InitPathRepair[] = [];
+  const appliedRepairs: InitConfigRepair[] = [];
   for (const repair of plan.repairs) {
-    if (await io.prompt.confirm(`Update ${repair.setting} from ${repair.oldValue} to ${repair.newValue}? [y/N]`)) {
+    if (await io.prompt.confirm(`Update ${repair.setting} from ${displayConfigValue(repair.oldValue)} to ${displayConfigValue(repair.newValue)}? [y/N]`)) {
       appliedRepairs.push(repair);
     } else {
-      io.writeLine(`Kept ${repair.setting}: ${repair.oldValue}`);
+      io.writeLine(`Kept ${repair.setting}: ${displayConfigValue(repair.oldValue)}`);
+    }
+  }
+
+  // Recovery only takes the confirmed backup here. Rebuilding is part of the
+  // same post-execution configuration write as every other component patch.
+  let recoveryBackup: string | undefined;
+  let recoveryError: string | undefined;
+  if (rebuild) {
+    try {
+      recoveryBackup = await deps.store.backup(deps.configPath);
+      io.writeLine(`Backed up damaged configuration to ${recoveryBackup}`);
+    } catch (error) {
+      recoveryError = error instanceof Error ? error.message : String(error);
     }
   }
 
   const results: InitComponentResult[] = [];
-  let configurationResult: InitComponentResult | undefined;
-
-  if (rebuild) {
-    // Recovery backs up and rebuilds the configuration before any provider
-    // installation or write, exactly as confirmed above.
-    const outcome = await backupAndRebuild(io, deps, detections.get("firecrawl"));
-    configurationResult = outcome.error
-      ? failedConfiguration(outcome.error)
-      : {
-          component: "configuration",
-          label: CONFIGURATION_LABEL,
-          outcome: "Configured",
-          required: true,
-          selected: true,
-          warnings: [],
-          detail: `damaged file backed up to ${outcome.backup}; conservative configuration rebuilt`,
-        };
-  }
-
   for (const component of deps.components) {
     const detection = detections.get(component.id)!;
-    const repair = appliedRepairs.find((candidate) => candidate.setting.startsWith(`${component.id}.`));
-    // Verification must exercise the binary the runtime would actually
-    // start: the confirmed repair target, else the configured path even
-    // when it is stale, else the detected path.
-    const chosenBinary = repair ? repair.newValue : detection.staleConfiguredPath ?? detection.binary;
     results.push(await component.execute({
       io,
       env: deps.env,
       detection,
-      ...(chosenBinary ? { binary: chosenBinary } : {}),
+      appliedRepairs: appliedRepairs.filter((repair) => repair.component === component.id),
       timeouts: effectiveTimeouts(classification),
     }));
   }
 
-  if (!configurationResult && (classification.status === "ok" || classification.status === "absent")) {
-    configurationResult = await writeConfigurationStep(deps, classification, detections, appliedRepairs);
-  }
-  if (!configurationResult) {
-    configurationResult = failedConfiguration("configuration was not rebuilt");
-  }
+  const configurationResult = await writeConfigurationStep(
+    deps,
+    classification,
+    detections,
+    appliedRepairs,
+    results,
+    { rebuild, backup: recoveryBackup, error: recoveryError },
+  );
   results.push(configurationResult);
 
   // A completed run ends with the local doctor; the MCP server is never started.
@@ -201,63 +195,36 @@ function writePlanItems(io: InitIo, deps: InitDeps, items: readonly InitPlanItem
   }
 }
 
-async function backupAndRebuild(
-  io: InitIo,
-  deps: InitDeps,
-  detection: InitDetection | undefined,
-): Promise<{ backup?: string; error?: string }> {
-  try {
-    const backup = await deps.store.backup(deps.configPath);
-    io.writeLine(`Backed up damaged configuration to ${backup}`);
-    const value = newConfigFile({
-      firecrawlBinary: detection?.installed && detection.binary ? detection.binary : undefined,
-    });
-    await deps.store.write(deps.configPath, value);
-    return { backup };
-  } catch (error) {
-    return { error: error instanceof Error ? error.message : String(error) };
-  }
-}
-
-function failedConfiguration(message: string): InitComponentResult {
-  return {
-    component: "configuration",
-    label: CONFIGURATION_LABEL,
-    outcome: "Failed",
-    required: true,
-    selected: true,
-    warnings: [],
-    detail: message,
-  };
-}
-
 async function writeConfigurationStep(
   deps: InitDeps,
-  classification: Extract<ConfigClassification, { status: "ok" } | { status: "absent" }>,
+  classification: ConfigClassification,
   detections: ReadonlyMap<InitComponentId, InitDetection>,
-  appliedRepairs: readonly InitPathRepair[],
+  appliedRepairs: readonly InitConfigRepair[],
+  results: readonly InitComponentResult[],
+  recovery: { readonly rebuild: boolean; readonly backup?: string; readonly error?: string },
 ): Promise<InitComponentResult> {
   const base = { component: "configuration" as const, label: CONFIGURATION_LABEL, required: true, selected: true };
-  const firecrawl = detections.get("firecrawl");
-  let value: Record<string, unknown>;
-  let warnings: InitWarning[] = [];
-  let detail: string;
+  if (recovery.error) return failedConfiguration(recovery.error);
+  if ((classification.status === "malformed" || classification.status === "schema-invalid") && !recovery.rebuild) {
+    return failedConfiguration("configuration was not rebuilt");
+  }
 
-  if (classification.status === "absent") {
-    value = newConfigFile({
-      firecrawlBinary: firecrawl?.installed && firecrawl.binary ? firecrawl.binary : undefined,
-    }) as unknown as Record<string, unknown>;
-    detail = `wrote new conservative configuration (no private access, no Search Fallback, no Unrestricted Browse) to ${deps.configPath}`;
-  } else {
+  const detectionPatches = [...detections.values()].flatMap((detection) => detection.configPatches ?? []);
+  const repairPatches: InitConfigPatch[] = appliedRepairs.map((repair) => ({ setting: repair.setting, value: repair.newValue }));
+  const executionPatches = results.flatMap((result) => result.configPatches ?? []);
+  // Execution contributions are last: post-run choices supersede proposals
+  // from the pre-run snapshot rather than being silently overwritten by it.
+  const patches = [...detectionPatches, ...repairPatches, ...executionPatches];
+  let warnings: InitWarning[] = [];
+  let value: Record<string, unknown>;
+  let added = 0;
+
+  if (classification.status === "ok") {
     warnings = highRiskSettingWarnings(classification.raw);
     const completed = completeExistingConfig(classification.raw);
     value = completed.merged as unknown as Record<string, unknown>;
-    // A binary the file never named explicitly is completed with the
-    // resolved absolute path so GUI clients do not depend on terminal PATH.
-    if (firecrawl?.installed && firecrawl.binary && !hasExplicitFirecrawlBinary(classification.raw)) {
-      value = setPath(value, "firecrawl.binary", firecrawl.binary);
-    }
-    if (completed.added.length === 0 && appliedRepairs.length === 0) {
+    added = completed.added.length;
+    if (added === 0 && patches.length === 0) {
       return {
         ...base,
         outcome: "Configured",
@@ -265,24 +232,32 @@ async function writeConfigurationStep(
         detail: `existing configuration at ${deps.configPath} is complete; no changes were made`,
       };
     }
-    detail = appliedRepairs.length > 0
-      ? `applied ${appliedRepairs.length} confirmed repair${appliedRepairs.length === 1 ? "" : "s"} and added ${completed.added.length} missing safe default${completed.added.length === 1 ? "" : "s"} to ${deps.configPath}; every explicit value is preserved`
-      : `added ${completed.added.length} missing safe default${completed.added.length === 1 ? "" : "s"} to ${deps.configPath}; every explicit value is preserved`;
+  } else {
+    value = newConfigFile() as unknown as Record<string, unknown>;
   }
 
-  for (const repair of appliedRepairs) {
-    value = setPath(value, repair.setting, repair.newValue);
-  }
+  for (const patch of patches) value = setPath(value, patch.setting, patch.value);
   try {
     await deps.store.write(deps.configPath, value);
   } catch (error) {
     return { ...base, outcome: "Failed", warnings: [], detail: error instanceof Error ? error.message : String(error) };
   }
+
+  let detail: string;
+  if (recovery.rebuild) {
+    detail = `damaged file backed up to ${recovery.backup}; conservative configuration rebuilt with ${patches.length} contributed setting${patches.length === 1 ? "" : "s"}`;
+  } else if (classification.status === "absent") {
+    detail = `wrote new conservative configuration (no private access, no Search Fallback, no Unrestricted Browse) with ${patches.length} contributed setting${patches.length === 1 ? "" : "s"} to ${deps.configPath}`;
+  } else {
+    detail = appliedRepairs.length > 0
+      ? `applied ${appliedRepairs.length} confirmed repair${appliedRepairs.length === 1 ? "" : "s"}, ${patches.length - appliedRepairs.length} other component setting${patches.length - appliedRepairs.length === 1 ? "" : "s"}, and ${added} missing safe default${added === 1 ? "" : "s"} to ${deps.configPath}; every explicit value is preserved`
+      : `applied ${patches.length} component setting${patches.length === 1 ? "" : "s"} and added ${added} missing safe default${added === 1 ? "" : "s"} to ${deps.configPath}; every explicit value is preserved`;
+  }
   return { ...base, outcome: "Configured", warnings, detail };
 }
 
-function hasExplicitFirecrawlBinary(raw: Record<string, unknown>): boolean {
-  return isRecord(raw.firecrawl) && typeof raw.firecrawl.binary === "string" && raw.firecrawl.binary !== "";
+function displayConfigValue(value: InitConfigValue): string {
+  return typeof value === "string" ? value : JSON.stringify(value);
 }
 
 function effectiveTimeouts(classification: ConfigClassification): InitTimeouts | undefined {
@@ -294,6 +269,18 @@ function effectiveTimeouts(classification: ConfigClassification): InitTimeouts |
   return {
     startupTimeoutMs: startup ?? DEFAULT_TIMEOUTS.startupTimeoutMs,
     shutdownTimeoutMs: shutdown ?? DEFAULT_TIMEOUTS.shutdownTimeoutMs,
+  };
+}
+
+function failedConfiguration(message: string): InitComponentResult {
+  return {
+    component: "configuration",
+    label: CONFIGURATION_LABEL,
+    outcome: "Failed",
+    required: true,
+    selected: true,
+    warnings: [],
+    detail: message,
   };
 }
 
