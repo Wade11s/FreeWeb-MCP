@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 const preloadPath = resolve("tests/integration/fixtures/fake-ip-preload.mjs");
 const firecrawlFixture = resolve("tests/integration/fixtures/fake-firecrawl-serve.mjs");
+const egoFixture = resolve("tests/integration/fixtures/fake-ego-browser.mjs");
 
 let root: string | undefined;
 let client: Client | undefined;
@@ -15,12 +16,15 @@ let transport: StdioClientTransport | undefined;
 async function startClient(options: { trusted?: boolean; firecrawlAllowPrivate?: boolean } = {}) {
   root = await mkdtemp(join(tmpdir(), "freeweb-fake-ip-stdio-"));
   const firecrawlBinary = join(root, "fake-firecrawl-serve.mjs");
+  const egoBinary = join(root, "fake-ego-browser.mjs");
   await copyFile(firecrawlFixture, firecrawlBinary);
+  await copyFile(egoFixture, egoBinary);
   await chmod(firecrawlBinary, 0o700);
+  await chmod(egoBinary, 0o700);
   await writeFile(join(root, "config.json"), JSON.stringify({
     network: { trustedDnsServers: ["1.1.1.1", "2606:4700:4700::1111"] },
     firecrawl: { binary: firecrawlBinary, allowPrivate: options.firecrawlAllowPrivate ?? false },
-    ego: { allowPrivate: false },
+    ego: { binary: egoBinary, allowPrivate: false },
   }));
   const env = Object.fromEntries(
     Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
@@ -59,6 +63,20 @@ async function firecrawlEvents(): Promise<Array<Record<string, any>>> {
   return text.trim() ? text.trim().split("\n").map((line) => JSON.parse(line)) : [];
 }
 
+async function egoEvents(): Promise<Array<Record<string, any>>> {
+  if (!root) return [];
+  const text = await readFile(join(root, "ego-events.jsonl"), "utf8").catch(() => "");
+  return text.trim() ? text.trim().split("\n").map((line) => JSON.parse(line)) : [];
+}
+
+async function browseTasks(): Promise<Record<string, Record<string, any>>> {
+  if (!root) return {};
+  const registry = JSON.parse(
+    await readFile(join(root, "data", "browse", "tasks.json"), "utf8").catch(() => JSON.stringify({ tasks: {} })),
+  ) as { tasks: Record<string, Record<string, any>> };
+  return registry.tasks;
+}
+
 async function callFetch(connected: Client, url: string, provider: "firecrawl-local" | "tinyfish") {
   return connected.callTool({
     name: "fetch",
@@ -74,6 +92,20 @@ async function callCrawl(connected: Client, url: string) {
   return connected.callTool({
     name: "crawl",
     arguments: { url, formats: ["markdown", "links"] },
+  });
+}
+
+async function openBrowsePage(connected: Client, url: string) {
+  return connected.callTool({
+    name: "browse",
+    arguments: { action: "open", name: "controlled fake-ip Page", page: "p1", url },
+  });
+}
+
+async function navigateBrowsePage(connected: Client, browseId: string, url: string) {
+  return connected.callTool({
+    name: "browse",
+    arguments: { action: "call", browseId, page: "p1", method: "page.goto", args: [url] },
   });
 }
 
@@ -421,5 +453,104 @@ describe("real stdio Crawl through controlled fake-ip DNS", () => {
     expect(await crawlJobDirectories()).toEqual([]);
     expect(await firecrawlEvents()).toEqual([]);
     expect((await events()).some((event) => event.kind.startsWith("trusted-"))).toBe(false);
+  });
+});
+
+describe("real stdio Managed Browse through controlled fake-ip DNS", () => {
+  it("opens and navigates a controlled public Page with ego private access disabled", async () => {
+    const connected = await startClient();
+
+    const opened = await openBrowsePage(connected, "https://public.fake-ip.test/start");
+    expect(opened.isError).not.toBe(true);
+    const openedOutput = opened.structuredContent as Record<string, any>;
+    expect(openedOutput).toMatchObject({ spaceId: 7, status: "ok", pages: ["p1"] });
+    const browseId = openedOutput.browseId as string;
+
+    const absolute = await navigateBrowsePage(connected, browseId, "https://public.fake-ip.test/next");
+    expect(absolute.isError).not.toBe(true);
+    expect(absolute.structuredContent).toMatchObject({ browseId, spaceId: 7, status: "ok", pages: ["p1"] });
+
+    // A same-origin relative navigation stays on the verified Page origin and needs no
+    // additional DNS decision. The existing scheme and authority-smuggling guard remains.
+    const relative = await navigateBrowsePage(connected, browseId, "/relative");
+    expect(relative.isError).not.toBe(true);
+    expect(relative.structuredContent).toMatchObject({ browseId, spaceId: 7, status: "ok" });
+    const protocolRelative = await navigateBrowsePage(connected, browseId, "//evil.example/path");
+    expect(protocolRelative.isError).toBe(true);
+    expect(failureCode(protocolRelative)).toBe("INVALID_INPUT");
+
+    expect((await egoEvents()).filter((event) => event.kind === "ego-navigation")).toEqual([
+      { kind: "ego-navigation", spaceId: 7, url: "https://public.fake-ip.test/start" },
+      { kind: "ego-navigation", spaceId: 7, url: "https://public.fake-ip.test/next" },
+      { kind: "ego-navigation", spaceId: 7, url: "/relative" },
+    ]);
+    const dnsEvents = await events();
+    expect(dnsEvents.filter((event) => event.kind === "system-lookup" && event.hostname === "public.fake-ip.test")).toHaveLength(2);
+    expect(dnsEvents.filter((event) => event.kind === "trusted-a" && event.hostname === "public.fake-ip.test")).toHaveLength(2);
+    const tasks = await browseTasks();
+    expect(Object.keys(tasks)).toEqual([browseId]);
+    expect(tasks[browseId]).toMatchObject({ browseId, spaceId: 7, status: "active", pages: ["p1"] });
+  });
+
+  it("reports fake-ip detection without trusted DNS before creating a Task Space", async () => {
+    const connected = await startClient({ trusted: false });
+
+    const result = await openBrowsePage(connected, "https://public.fake-ip.test/");
+
+    expect(result.isError).toBe(true);
+    expect(failureCode(result)).toBe("FAKE_IP_DNS_DETECTED");
+    expect(JSON.stringify(result.content)).toContain("restart the MCP server or reload the session");
+    expect(await egoEvents()).toEqual([]);
+    expect(await browseTasks()).toEqual({});
+    expect((await events()).some((event) => event.kind.startsWith("trusted-"))).toBe(false);
+  });
+
+  it("blocks unsafe and unverifiable open targets before ego execution", async () => {
+    const connected = await startClient();
+
+    for (const [url, code] of [
+      ["http://127.0.0.1/", "PRIVATE_URL_BLOCKED"],
+      ["http://localhost/", "PRIVATE_URL_BLOCKED"],
+      ["https://198.18.0.1/", "PRIVATE_URL_BLOCKED"],
+      ["https://mixed.fake-ip.test/", "PRIVATE_URL_BLOCKED"],
+      ["https://private-trusted.fake-ip.test/", "PRIVATE_URL_BLOCKED"],
+      ["https://unverified.fake-ip.test/", "FAKE_IP_DNS_UNVERIFIED"],
+    ]) {
+      const result = await openBrowsePage(connected, url);
+      expect(result.isError, url).toBe(true);
+      expect(failureCode(result), url).toBe(code);
+    }
+
+    expect(await egoEvents()).toEqual([]);
+    expect(await browseTasks()).toEqual({});
+  });
+
+  it("blocks unsafe native navigation without replacing or taking over the Task Space", async () => {
+    const connected = await startClient();
+    const opened = await openBrowsePage(connected, "https://public.fake-ip.test/start");
+    const browseId = (opened.structuredContent as Record<string, any>).browseId as string;
+    const before = await browseTasks();
+    const workBefore = (await egoEvents()).filter((event) => event.kind === "ego-work").length;
+
+    for (const [url, code] of [
+      ["http://10.0.0.5/private", "PRIVATE_URL_BLOCKED"],
+      ["http://metadata.google.internal/", "PRIVATE_URL_BLOCKED"],
+      ["https://mixed.fake-ip.test/", "PRIVATE_URL_BLOCKED"],
+      ["https://unverified.fake-ip.test/", "FAKE_IP_DNS_UNVERIFIED"],
+      ["file:///etc/passwd", "INVALID_INPUT"],
+      ["https:public.fake-ip.test/next", "INVALID_INPUT"],
+      ["/\\127.0.0.1/", "INVALID_INPUT"],
+    ]) {
+      const result = await navigateBrowsePage(connected, browseId, url);
+      expect(result.isError, url).toBe(true);
+      expect(failureCode(result), url).toBe(code);
+    }
+
+    const log = await egoEvents();
+    expect(log.filter((event) => event.kind === "ego-work")).toHaveLength(workBefore);
+    expect(log.filter((event) => event.kind === "ego-navigation")).toEqual([
+      { kind: "ego-navigation", spaceId: 7, url: "https://public.fake-ip.test/start" },
+    ]);
+    expect(await browseTasks()).toEqual(before);
   });
 });
