@@ -138,6 +138,24 @@ describe("doctor text output", () => {
     expect((await readFile(invocations, "utf8")).trim().split("\n").sort()).toEqual(["--version", "--version"]);
   });
 
+  it("shows trusted DNS state and restart remediation without a business request", async () => {
+    const invocations = join(root, "dns-doctor-invocations.txt");
+    const firecrawl = await fakeBinary("firecrawl-local", "firecrawl-local 0.1.0", invocations);
+    const ego = await fakeBinary("ego-browser", "ego-browser 1.2.3", invocations);
+    await writeConfig({
+      network: { trustedDnsServers: ["1.1.1.1"] },
+      firecrawl: { binary: firecrawl },
+      ego: { binary: ego },
+    });
+
+    const result = runCli(["doctor"]);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("PASS Trusted DNS for fake-ip: Configured: 1 trusted public DNS server");
+    expect(result.stdout).toContain("Configuration changes require MCP restart or session reload");
+    expect((await readFile(invocations, "utf8")).trim().split("\n").sort()).toEqual(["--version", "--version"]);
+  });
+
   it("keeps optional warnings from failing an otherwise ready environment", async () => {
     const firecrawl = await fakeBinary("firecrawl-local", "firecrawl-local 9.9.9");
     const ego = await fakeBinary("ego-browser", "ego-browser 1.2.3");
@@ -190,9 +208,14 @@ describe("doctor JSON output", () => {
     };
     expect(report.ok).toBe(true);
     expect(report.checks.map((check) => check.name))
-      .toEqual(["node", "firecrawl-local", "ego-browser", "tinyfish", "ego-platform", "data-directory"]);
+      .toEqual(["node", "firecrawl-local", "ego-browser", "tinyfish", "trusted-dns", "ego-platform", "data-directory"]);
     expect(report.checks[0]).toMatchObject({ ok: true, required: true, version: process.version });
     expect(report.checks.find((check) => check.name === "tinyfish")).toMatchObject({ ok: false, required: false });
+    expect(report.checks.find((check) => check.name === "trusted-dns")).toMatchObject({
+      ok: true,
+      required: false,
+      remediation: expect.stringMatching(/MCP restart or session reload/),
+    });
   });
 
   it("adds redacted configuration to JSON only with --show-config", async () => {
