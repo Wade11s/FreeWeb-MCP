@@ -233,6 +233,7 @@ export class CrawlManager {
       if (job.status === "scraping") {
         job.status = "lost";
         job.updatedAt = new Date(this.now()).toISOString();
+        this.reconcilePages(job);
         await this.finalize(job);
       }
     }
@@ -315,6 +316,7 @@ export class CrawlManager {
         job.status = "lost";
         job.errors.push({ code: info.code, message: info.message });
         job.updatedAt = new Date(this.now()).toISOString();
+        this.reconcilePages(job);
         this.warnings.delete(crawlId);
         await this.persist(job);
         clearInterval(this.timers.get(crawlId));
@@ -334,6 +336,7 @@ export class CrawlManager {
         job.status = "failed";
         job.errors.push({ code: "CRAWL_PROVIDER_UNAVAILABLE", message: `Provider failed ${failures} consecutive refreshes: ${info.message}` });
         job.updatedAt = new Date(this.now()).toISOString();
+        this.reconcilePages(job);
         await this.persist(job);
         clearInterval(this.timers.get(crawlId));
         this.timers.delete(crawlId);

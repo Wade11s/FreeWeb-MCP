@@ -918,3 +918,79 @@ describe("Crawl Page identity and links", () => {
     expect(artifact.pages[0].formats.links).toEqual(links);
   });
 });
+
+describe("Crawl terminal reconciliation", () => {
+  const readStatus = (crawlId: string) =>
+    manager.status({ crawlId, offset: 0, limit: 10, maxCharsPerPage: 50_000 });
+  const jobPath = (crawlId: string) => join(root, "crawls", crawlId, "job.json");
+
+  const seedActiveUpperBound = async () => {
+    const started = await manager.start(crawlInputSchema.parse({ url: "https://example.com" }));
+    adapter.snapshot = {
+      status: "scraping",
+      total: 10,
+      completed: 10,
+      pages: [
+        { url: "https://example.com/a", formats: { markdown: "A" } },
+        { url: "https://example.com/a#part", formats: { markdown: "A again" } },
+        { url: "https://example.com/b", formats: { markdown: "B" } },
+        { url: "https://example.com/c", formats: { markdown: "C" } },
+        { url: "https://example.com/d", formats: { markdown: "D" } },
+        { url: "https://example.com/d#part", formats: { markdown: "D again" } },
+      ],
+      errors: [],
+    };
+    const active = await readStatus(started.crawlId);
+    expect(active.total).toBe(10);
+    expect(active.completed).toBe(4);
+    expect(active.pages).toHaveLength(4);
+    return started.crawlId;
+  };
+
+  const expectReconciledTerminal = async (crawlId: string) => {
+    const terminal = await readStatus(crawlId);
+    expect(terminal.total).toBe(4);
+    expect(terminal.completed).toBe(4);
+    expect(terminal.returned).toBe(4);
+    expect(terminal.hasMore).toBe(false);
+
+    const checkpoint = JSON.parse(await readFile(jobPath(crawlId), "utf8"));
+    expect(checkpoint.total).toBe(4);
+    expect(checkpoint.completed).toBe(4);
+    expect(checkpoint.pages).toHaveLength(4);
+    const artifact = JSON.parse(await artifacts.readText(terminal.artifactId!));
+    expect(artifact.total).toBe(4);
+    expect(artifact.completed).toBe(4);
+    expect(artifact.pages).toHaveLength(4);
+  };
+
+  it("reconciles total when close marks an active Job lost", async () => {
+    const crawlId = await seedActiveUpperBound();
+
+    await manager.close();
+
+    const lost = await readStatus(crawlId);
+    expect(lost.status).toBe("lost");
+    await expectReconciledTerminal(crawlId);
+  });
+
+  it("reconciles total when a missing provider job marks the Job lost", async () => {
+    const crawlId = await seedActiveUpperBound();
+    adapter.getCrawl = async () => { throw new FreeWebError("JOB_NOT_FOUND", "provider forgot the job"); };
+
+    const lost = await readStatus(crawlId);
+    expect(lost.status).toBe("lost");
+    await expectReconciledTerminal(crawlId);
+  });
+
+  it("reconciles total when repeated refresh failures mark the Job failed", async () => {
+    const crawlId = await seedActiveUpperBound();
+    adapter.getCrawl = async () => { throw new FreeWebError("FIRECRAWL_PROCESS_DEAD", "serve exited"); };
+
+    await readStatus(crawlId);
+    await readStatus(crawlId);
+    const failed = await readStatus(crawlId);
+    expect(failed.status).toBe("failed");
+    await expectReconciledTerminal(crawlId);
+  });
+});
