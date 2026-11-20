@@ -169,7 +169,9 @@ export function createEgoComponent(deps: EgoComponentDeps = {}): InitComponent {
     if (!commandSucceeded(native)) {
       return { ok: false, message: `ego-browser native Node.js entry check failed: ${failureDetail(native)}` };
     }
-    if (!native.stdout.includes(EGO_NATIVE_MARKER)) {
+    // ego-browser's embedded Node runtime writes script output to stderr, so
+    // the marker must be looked for on both streams, as the provider does.
+    if (!`${native.stdout}\n${native.stderr}`.includes(EGO_NATIVE_MARKER)) {
       return { ok: false, message: "ego-browser native Node.js entry did not report the expected marker" };
     }
     return { ok: true };

@@ -40,10 +40,12 @@ function recorder(overrides: Partial<Record<CallKind, Partial<CommandResult>>> =
   const runner: CommandRunner = async (call) => {
     calls.push(call);
     const kind = callKind(call);
+    // Real ego-browser writes the embedded Node script output to stderr, so the
+    // recorded default keeps the marker off stdout on purpose.
     const defaultResult: CommandResult = {
       exitCode: 0,
-      stdout: kind === "native" ? EGO_NATIVE_MARKER : "ego-browser 1.2.3",
-      stderr: "",
+      stdout: kind === "native" ? "" : "ego-browser 1.2.3",
+      stderr: kind === "native" ? EGO_NATIVE_MARKER : "",
     };
     return { ...defaultResult, ...overrides[kind] };
   };
@@ -380,7 +382,7 @@ describe("ego-lite init handoff and verification", () => {
   });
 
   it("rejects a native entry that prints the wrong marker", async () => {
-    const { runner } = recorder({ native: { stdout: "unexpected output" } });
+    const { runner } = recorder({ native: { stdout: "unexpected output", stderr: "also unexpected" } });
     const component = createEgoComponent({ commandRunner: runner });
 
     const result = await component.execute(executeInput(installedDetection()));

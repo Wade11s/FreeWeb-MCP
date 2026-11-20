@@ -84,7 +84,8 @@ const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(egoLog)}, JSON.stringify(args) + "\\n");
 if (args[0] === "--version") { console.log("ego-browser 1.2.3"); process.exit(0); }
 if (args[0] === "nodejs" && args[1] === "-e") {
-  ${options.failNative ? "process.exit(2);" : `console.log(${JSON.stringify(EGO_NATIVE_MARKER)}); process.exit(0);`}
+  // Real ego-browser writes the embedded script output to stderr.
+  ${options.failNative ? "process.exit(2);" : `console.error(${JSON.stringify(EGO_NATIVE_MARKER)}); process.exit(0);`}
 }
 process.exit(2);
 `;

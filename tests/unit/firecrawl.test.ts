@@ -366,7 +366,8 @@ describe("Firecrawl Local v0.1.0 provider", () => {
 
     expect(spawnCalls[0]?.args).toEqual(["serve", "--host", "127.0.0.1", "--port", "45678"]);
     expect(spawnCalls[0]?.env.FIRECRAWL_CLOUD).toBe("off");
-    expect(spawnCalls[0]?.env.FIRECRAWL_LOCAL_ALLOW_PRIVATE).toBe("0");
+    // firecrawl-local binds this to a clap bool flag: only true/false are valid.
+    expect(spawnCalls[0]?.env.FIRECRAWL_LOCAL_ALLOW_PRIVATE).toBe("false");
     expect(requests.find((request) => request.method === "POST")?.url).toBe("http://127.0.0.1:45678/v2/scrape");
   });
 
@@ -382,7 +383,7 @@ describe("Firecrawl Local v0.1.0 provider", () => {
 
     await provider.fetch(fetchInputSchema.parse({ urls: ["https://example.com"] }));
     expect(spawnCalls[0]?.args).toContain("--allow-private");
-    expect(spawnCalls[0]?.env.FIRECRAWL_LOCAL_ALLOW_PRIVATE).toBe("1");
+    expect(spawnCalls[0]?.env.FIRECRAWL_LOCAL_ALLOW_PRIVATE).toBe("true");
   });
 
   it("cleans up its own child when health does not identify Firecrawl Local 0.1.0", async () => {
@@ -634,7 +635,7 @@ describe("Firecrawl Local v0.1.0 provider", () => {
       }
       expect(serveEnv.TMPDIR).toBe(process.env.TMPDIR ?? serveEnv.TMPDIR);
       expect(serveEnv.FIRECRAWL_CLOUD).toBe("off");
-      expect(serveEnv.FIRECRAWL_LOCAL_ALLOW_PRIVATE).toBe("0");
+      expect(serveEnv.FIRECRAWL_LOCAL_ALLOW_PRIVATE).toBe("false");
       expect(searchEnv.FIRECRAWL_CLOUD).toBe("search");
     } finally {
       if (saved.tinyfish === undefined) delete process.env.TINYFISH_API_KEY;
