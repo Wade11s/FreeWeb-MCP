@@ -52,27 +52,34 @@ export interface InitRunSummary {
 /**
  * The single exit-status derivation for Initialization.
  *
- * 0 only when every required component (Firecrawl, base configuration) is
- * usable and no selected operation actually failed. 1 when a selected
- * installation, write, or verification operation failed, or when a required
- * component is Pending, Failed, or unexpectedly Skipped. Optional Pending or
- * Skipped components never fail the run.
+ * 0 only when every expected required component is usable and no selected
+ * operation actually failed. 1 when a selected installation, write, or
+ * verification operation failed, or when a required component is Pending,
+ * Failed, unexpectedly Skipped, or absent from the result set. Optional
+ * Pending or Skipped components never fail the run.
  */
-export function initExitCode(results: readonly InitComponentResult[]): number {
-  let firecrawlReady = false;
-  let configurationReady = false;
+export function initExitCode(
+  results: readonly InitComponentResult[],
+  expectedRequiredResults = 2,
+): number {
+  const readyRequired = new Set<InitComponentId>();
   for (const result of results) {
     if (result.selected && result.outcome === "Failed") return 1;
-    if (result.required && result.outcome !== "Installed" && result.outcome !== "Configured") return 1;
-    if (result.component === "firecrawl" && result.required && result.outcome === "Installed") firecrawlReady = true;
-    if (result.component === "configuration" && result.required && result.outcome === "Configured") configurationReady = true;
+    if (result.required) {
+      if (result.outcome !== "Installed" && result.outcome !== "Configured") return 1;
+      readyRequired.add(result.component);
+    }
   }
-  // An empty or partial result set is not evidence that the required local
-  // baseline is ready. Both required results must be present and usable.
-  return firecrawlReady && configurationReady ? 0 : 1;
+  // The caller supplies the number of registered required providers plus the
+  // base configuration. This keeps readiness generic while ensuring an empty
+  // or partial result set cannot masquerade as a usable local baseline.
+  return readyRequired.size === expectedRequiredResults ? 0 : 1;
 }
 
 /** Builds the run summary, deriving the exit status exactly once. */
-export function initRunSummary(results: readonly InitComponentResult[]): InitRunSummary {
-  return { results, exitCode: initExitCode(results) };
+export function initRunSummary(
+  results: readonly InitComponentResult[],
+  expectedRequiredResults = 2,
+): InitRunSummary {
+  return { results, exitCode: initExitCode(results, expectedRequiredResults) };
 }

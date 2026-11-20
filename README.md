@@ -24,6 +24,17 @@ Automatic Firecrawl installation additionally needs Rust, Cargo, and a C compile
 
 Firecrawl installation follows the [official Local quickstart](https://docs.firecrawl.dev/quickstarts/firecrawl-local). On macOS and Debian/Ubuntu, `init` can install the certified 0.1.0 release when those prerequisites exist. Windows and other platforms receive detection and manual guidance only. Providers are installed separately and are not redistributed by this package.
 
+### Initialization support matrix
+
+| Platform | Firecrawl Local | ego-lite | Initialization evidence |
+| --- | --- | --- | --- |
+| macOS | Detect/preserve or certified Cargo install after prerequisite checks | Optional official-download handoff and human onboarding | Simulated in the automated suite; the opt-in live run is recorded separately |
+| Debian/Ubuntu | Detect/preserve or certified Cargo install after prerequisite checks | Unsupported: `Skipped` | **Simulated only; not live-tested** |
+| Windows | Detection and manual guidance only | Optional official-download handoff and human onboarding | **Simulated only; not live-tested** |
+| Other platforms/distributions | Detection and manual guidance only | Unsupported: `Skipped` | **Simulated only; not live-tested** |
+
+TinyFish uses the bundled SDK on every platform and remains optional; no live account or billing verification is implied. See the [Initialization setup guide](docs/providers/setup.md) for prerequisites, human decisions, outcomes, exit status, and recovery.
+
 ## Install
 
 FreeWeb-MCP ships as a CLI-only package. The only public entry point is the `freeweb-mcp` executable declared by `bin` in `package.json`: the package declares no `main`, `types`, or `exports` metadata and has no public barrel modules, so importing the package name fails by design. Every internal TypeScript module is private to the CLI.
@@ -118,7 +129,7 @@ node dist/cli.js mcp   # same as npm start
 
 ## Initialization
 
-`freeweb-mcp init` is an interactive, terminal-only command that sets up the local baseline. It runs only when explicitly invoked — never from MCP startup or `doctor` — and there is no `--yes`, unattended, or JSON mode.
+`freeweb-mcp init` is an interactive, terminal-only command that sets up the local baseline. It runs only when explicitly invoked — never from MCP startup or `doctor` — and there is no `--yes`, unattended, or JSON mode. The default plan selects Firecrawl Local, TinyFish, and ego-lite where supported; Firecrawl is required, while TinyFish and ego-lite may be declined without failing an otherwise usable required baseline.
 
 1. **Plan and confirm.** It shows the planned provider and configuration actions and asks for confirmation before any side effect. Declining, or running without a terminal, stops before any write, installation, or provider launch and exits non-zero.
 2. **Firecrawl is installed only when missing, and existing installations are preserved.** On macOS and Debian/Ubuntu, a missing `firecrawl-local` is installed from crates.io with the exact certified request `cargo install firecrawl-local --version 0.1.0`; the pin is `CERTIFIED_FIRECRAWL_VERSION` in `src/init/components/firecrawl.ts`. Before Cargo runs, `init` checks `rustc`, `cargo`, and `cc`; when one is absent it reports `Pending` with official rustup, Xcode command-line tools, or build-essential guidance and never installs those prerequisites. It never follows a source branch, runs `git clone`, selects another version, runs Firecrawl `login` or Firecrawl's own `init`, enables Search Fallback or private access, or registers an MCP client. Windows and other unsupported platforms receive detection and manual guidance without claiming a verified automatic installation. Existing installations of any version are never upgraded, downgraded, or reinstalled. Verification starts a FreeWeb-MCP-owned serve process on a loopback address, an owned port, with `FIRECRAWL_CLOUD=off`, requests only the local `/health` endpoint, and shuts the process down with the bounded shutdown discipline for both new and existing binaries. Versions other than the certified 0.1.0 are left untouched and reported as an `Uncertified` warning; a failed health check is reported separately as `Failed`. Chrome/Chromium is reported as an optional enhancement for JavaScript rendering and screenshots and is never a required readiness condition.
@@ -127,9 +138,11 @@ node dist/cli.js mcp   # same as npm start
 5. **Damaged configuration is never treated as absent.** Malformed or schema-invalid files require an explicit backup-and-rebuild confirmation before any installation or write; declining aborts with zero changes. The backup is non-overwriting (`config.backup.json`, then `config.backup.1.json`, …) and its path is reported without echoing damaged-file contents. Configuration writes are atomic — same-directory temporary file plus rename — with mode 0600 files and 0700 directories on POSIX; backups are also changed to 0600 where supported, so an interrupted run never leaves partially written JSON.
 6. **Doctor and summary.** A completed run executes the local doctor checks (the MCP server is never started), prints a summary using the `Installed / Configured / Skipped / Pending / Failed` outcome categories, and points at `freeweb-mcp print-config` for MCP client registration. `init` never reads or writes other MCP clients' configurations.
 
+Outcomes mean: `Installed` — local installation and Initialization verification passed; `Configured` — requested non-secret prerequisites are effective (for TinyFish, key presence plus attestation only); `Skipped` — optional setup was declined or is unsupported; `Pending` — a human prerequisite or required manual installation remains; `Failed` — a selected operation actually failed. `Uncertified` remains a warning, not an outcome.
+
 Exit status: `0` only when Firecrawl and the base configuration are usable and no selected operation actually failed; `1` when a selected installation, write, or verification operation fails, or when Firecrawl or the base configuration remains `Pending` or `Failed`. Optional `Pending` or `Skipped` components never fail the run.
 
-Initialization is idempotent: rerun it after an interruption, after a failed run, or after installing a provider manually. Existing Firecrawl installations are preserved; only a missing Firecrawl is installed, and a rerun verifies a valid 0.1.0 instead of reinstalling it.
+Initialization is idempotent: rerun it after an interruption, after a failed run, or after installing a provider manually. Existing Firecrawl installations are preserved; only a missing Firecrawl is installed, and a rerun verifies a valid 0.1.0 instead of reinstalling it. Recovery is: read the summary, complete the required human/prerequisite step without deleting state, rerun `freeweb-mcp init`, and then run `freeweb-mcp doctor`. Valid explicit settings are preserved, stale path repairs still require confirmation, backups are never overwritten, and an interrupted atomic write leaves the prior complete file in place. Use `freeweb-mcp print-config` separately for client registration.
 
 ### TinyFish Initialization
 
@@ -151,7 +164,9 @@ The optional ego-lite component is available in `init`. On macOS and Windows it 
 
 Only after that confirmation does Initialization check `ego-browser --version` and the native Node.js entry (`ego-browser nodejs -e ...`). A newly discovered absolute path is recorded only when no explicit value existed. An explicit `ego.binary` is preserved as written: if it resolves to a different absolute path (including when `EGO_BROWSER_BIN` overrides it), Initialization proposes a separate old → new approval instead of silently rewriting it. Incomplete onboarding is `Pending`; an opener or verification failure is `Failed`; unsupported platforms (including Linux) are `Skipped` with an explanation and no opener launch. Optional `Pending`/`Skipped` does not fail the required local baseline, while a selected `Failed` operation does.
 
-Installing the application and passing these probes is **not** configured Browse readiness: Managed Browse still depends on your allowed Profile, GUI onboarding state, and browser-data decisions, and FreeWeb-MCP never imports browser data for you. Routine automated tests use fake openers, fake executables and temporary homes; Windows is simulated only until a Windows live environment is available via `FREEWEB_INIT_TEST_MODE=1` with `FREEWEB_INIT_PLATFORM=win32`, and production ignores `FREEWEB_INIT_PLATFORM`. No routine test launches a real installer or GUI.
+Installing the application and passing these probes is **not** configured Browse readiness: Managed Browse still depends on your allowed Profile, GUI onboarding state, and browser-data decisions, and FreeWeb-MCP never imports browser data for you. Routine automated tests use fake openers, fake executables and temporary homes; all Initialization platform branches are simulated only until separately verified, including Windows through `FREEWEB_INIT_TEST_MODE=1` with `FREEWEB_INIT_PLATFORM=win32` (production ignores `FREEWEB_INIT_PLATFORM`). No routine test launches a real installer or GUI. Windows, Debian/Ubuntu, other Linux distributions, and other non-macOS platforms have not been live-tested.
+
+The opt-in [macOS live-run procedure](docs/providers/macos-live-run.md) assigns every action and decision to the human or orchestrator. Its [evidence scaffold](docs/providers/macos-live-evidence.md) is currently **not run** and must be filled with actual observations only; it never requests credentials or browser data.
 
 ## Configuration
 
