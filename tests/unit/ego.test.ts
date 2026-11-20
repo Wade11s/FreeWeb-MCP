@@ -55,65 +55,190 @@ function parseScriptArray(source: string, pattern: RegExp): string[] {
   return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
 }
 
+interface SimTab {
+  readonly id: string;
+  label: string | null;
+  url: string;
+  title: string;
+  readonly openedBy: string;
+  readonly active: boolean;
+}
+
+interface SimIdentity {
+  url: string | null;
+  title: string | null;
+}
+
+function simIdentityOf(tab: SimTab | SimIdentity): SimIdentity {
+  return {
+    url: typeof tab.url === "string" ? tab.url : null,
+    title: typeof tab.title === "string" ? tab.title : null,
+  };
+}
+
+function simIdentityKey(value: SimTab | SimIdentity): string {
+  return JSON.stringify(simIdentityOf(value));
+}
+
+function parseScriptIdentities(source: string, pattern: RegExp): Record<string, SimIdentity> {
+  const match = pattern.exec(source);
+  if (!match) return {};
+  const parsed = JSON.parse(match[1]) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const result: Record<string, SimIdentity> = {};
+  for (const [label, value] of Object.entries(parsed)) {
+    if (!label || !value || typeof value !== "object" || Array.isArray(value)) continue;
+    const identity = value as Record<string, unknown>;
+    result[label] = {
+      url: typeof identity.url === "string" ? identity.url : null,
+      title: typeof identity.title === "string" ? identity.title : null,
+    };
+  }
+  return result;
+}
+
 /**
- * Models ego-lite 0.6.3.14 label lifetime: finish(keep) retains Pages but ends their labels,
- * and the next claim adopts those unlabeled tabs. An adopt without `as` relabels them p1.
+ * Models ego-lite 0.6.3.14: finish(keep) retains tab objects in their original order but
+ * drops their labels, and the next claim sees those unlabeled tabs. Adoption is applied to
+ * the specific tab object selected by the generated script, so identity mistakes are visible.
  */
 class LabelLifecycleRunner implements EgoRunner {
   readonly calls: EgoRunRequest[] = [];
   readonly adoptedAs: string[] = [];
-  private labels: string[] = [];
-  private unlabeled: string[] = [];
+  workPages: string[] = [];
+  workValue: unknown = undefined;
+  lastWorkLabels: string[] = [];
+  private tabs: SimTab[] = [];
+  private nextTabId = 1;
+
+  seedTabs(specs: Array<{ label: string; url: string; title: string }>): void {
+    this.tabs = specs.map((spec, index) => ({
+      id: `tab-${this.nextTabId++}`,
+      label: spec.label,
+      url: spec.url,
+      title: spec.title,
+      openedBy: "agent",
+      active: index === 0,
+    }));
+  }
+
+  identityMap(): Record<string, SimIdentity> {
+    return Object.fromEntries(
+      this.tabs
+        .filter((tab): tab is SimTab & { label: string } => tab.label !== null)
+        .map((tab) => [tab.label, simIdentityOf(tab)]),
+    );
+  }
+
+  labelForUrl(url: string): string | null {
+    return this.tabs.find((tab) => tab.url === url)?.label ?? null;
+  }
+
+  changeIdentity(url: string, replacement: string): void {
+    const tab = this.tabs.find((entry) => entry.url === url);
+    if (!tab) throw new Error(`no tab with url ${url}`);
+    tab.url = replacement;
+    tab.title = `Changed ${replacement}`;
+  }
+
+  private errorResult(request: EgoRunRequest, code: string, message: string, details: Record<string, unknown>): EgoRunResult {
+    return egoResult(request, { ok: false, error: { name: "Error", message, code, details } });
+  }
 
   async run(request: EgoRunRequest): Promise<EgoRunResult> {
     this.calls.push(request);
     const script = request.script;
     const keptPages = parseScriptArray(script, /const KEPT_PAGES = (\[[^\]]*\]);/);
+    const pageIdentities = parseScriptIdentities(script, /const PAGE_IDENTITIES = (\{[^\n]*\});/);
     const pageLabel = /const PAGE_LABEL = "([^"]+)";/.exec(script)?.[1];
 
     if (request.kind === "finish") {
-      const kept = keptPages.length
+      const keep = keptPages.length
         ? keptPages
         : parseScriptArray(script, /await task\.finish\(\{ keep: (\[[^\]]*\]) \}\)/);
-      this.unlabeled = [...kept];
-      this.labels = [];
-      return egoResult(request, { ...finishPayload(7), pages: kept });
+      const keptTabs = this.tabs.filter((tab) => tab.label !== null && keep.includes(tab.label));
+      const identities = Object.fromEntries(
+        keptTabs.map((tab) => [tab.label as string, simIdentityOf(tab)]),
+      );
+      // Kept tab objects stay in their original order; only their labels end.
+      this.tabs = keptTabs;
+      for (const tab of this.tabs) tab.label = null;
+      return egoResult(request, { ...finishPayload(7), pages: keep, pageIdentities: identities });
     }
 
-    if (/const TASK_ID = null;/.test(script)) {
-      this.labels = pageLabel ? [pageLabel] : ["p1"];
+    if (/const TASK_ID = null;/.test(script) && this.tabs.length === 0) {
+      this.seedTabs([{
+        label: pageLabel ?? "p1",
+        url: `https://page.test/${pageLabel ?? "p1"}`,
+        title: `Page ${pageLabel ?? "p1"}`,
+      }]);
     }
 
-    if (this.unlabeled.length > 0) {
-      if (script.includes("task.adopt(tab.page, { as:")) {
-        this.labels = keptPages.length ? [...keptPages] : [...this.unlabeled];
-        this.adoptedAs.push(...this.labels);
+    const candidates = this.tabs.filter((tab) => tab.label === null && tab.openedBy === "agent");
+    if (candidates.length > 0) {
+      if (script.includes("pageIdentityKey(identity)")) {
+        const adopted = new Set<string>();
+        for (const tab of candidates) {
+          const matches = Object.entries(pageIdentities).filter(([label, identity]) =>
+            keptPages.includes(label) && !adopted.has(label) && simIdentityKey(identity) === simIdentityKey(tab),
+          );
+          if (matches.length !== 1) {
+            return this.errorResult(request, "EGO_PAGE_IDENTITY_MISMATCH", "cannot restore a kept Page label", {
+              identity: simIdentityOf(tab),
+              keptPages,
+            });
+          }
+          tab.label = matches[0][0];
+          adopted.add(tab.label);
+          this.adoptedAs.push(tab.label);
+        }
+        const unmatched = keptPages.filter((label) => !adopted.has(label));
+        if (unmatched.length > 0) {
+          return this.errorResult(request, "EGO_PAGE_IDENTITY_MISMATCH", "kept Pages were not restored", { unmatched });
+        }
+      } else if (script.includes("KEPT_PAGES[index]")) {
+        candidates.slice(0, keptPages.length).forEach((tab, index) => {
+          tab.label = keptPages[index] ?? null;
+          this.adoptedAs.push(tab.label);
+        });
       } else {
-        this.labels = this.unlabeled.map(() => "p1");
+        for (const tab of candidates) {
+          tab.label = "p1";
+          this.adoptedAs.push("p1");
+        }
       }
-      this.unlabeled = [];
     }
 
-    if (pageLabel && !this.labels.includes(pageLabel)) {
-      return egoResult(request, {
-        ok: false,
-        error: {
-          name: "Error",
-          message: `Page ${pageLabel} was not found`,
-          code: "EGO_PAGE_NOT_FOUND",
-          details: { requestedPage: pageLabel, availablePages: [...this.labels] },
-        },
+    const labels = this.tabs.map((tab) => tab.label).filter((label): label is string => label !== null);
+    if (pageLabel && !labels.includes(pageLabel)) {
+      return this.errorResult(request, "EGO_PAGE_NOT_FOUND", `Page ${pageLabel} was not found`, {
+        requestedPage: pageLabel,
+        availablePages: labels,
       });
     }
 
     const explicitAs = /task\.adopt\(egoTab0\.page, \{ as: "([^"]+)" \}\)/.exec(script)?.[1];
     if (explicitAs) {
-      this.labels = [explicitAs];
-      this.adoptedAs.push(explicitAs);
+      const active = this.tabs.find((tab) => tab.active) ?? this.tabs[0];
+      if (active) {
+        active.label = explicitAs;
+        active.url = `https://page.test/${explicitAs}`;
+        active.title = `Page ${explicitAs}`;
+        this.adoptedAs.push(explicitAs);
+      }
     }
 
-    const pages = this.labels.length ? [...this.labels] : ["p1"];
-    return egoResult(request, { ...taskPayload(7, "agent", pages) });
+    const actualLabels = this.tabs.map((tab) => tab.label).filter((label): label is string => label !== null);
+    const pages = this.workPages.length ? [...this.workPages] : actualLabels;
+    this.lastWorkLabels = [...actualLabels];
+    const value = this.workValue;
+    this.workPages = [];
+    this.workValue = undefined;
+    return egoResult(request, {
+      ...taskPayload(7, "agent", pages),
+      ...(value === undefined ? {} : { value }),
+      pageIdentities: this.identityMap(),
+    });
   }
 }
 
@@ -537,6 +662,25 @@ async function openAndKeepPage(
     method: "task.adopt",
     args: [{ active: true, as: label }],
   });
+  return opened.browseId;
+}
+
+async function openWithTabs(
+  dataDir: string,
+  provider: EgoProvider,
+  runner: LabelLifecycleRunner,
+  tabs: Array<{ label: string; url: string; title: string }>,
+): Promise<string> {
+  const opened = await provider.browse({ action: "open", name: "identity task", page: "p1" });
+  if (!opened.browseId) throw new Error("expected browseId");
+  runner.seedTabs(tabs);
+  const registryPath = join(dataDir, "browse", "tasks.json");
+  const registry = JSON.parse(await readFile(registryPath, "utf8")) as {
+    tasks: Record<string, { pages: string[]; pageIdentities?: Record<string, SimIdentity> }>;
+  };
+  registry.tasks[opened.browseId]!.pages = tabs.map((tab) => tab.label);
+  registry.tasks[opened.browseId]!.pageIdentities = runner.identityMap();
+  await writeFile(registryPath, JSON.stringify(registry));
   return opened.browseId;
 }
 
@@ -1311,12 +1455,105 @@ describe("EgoProvider Page label resolution", () => {
       args: [],
     });
     expect(worked).toMatchObject({ status: "ok", result: { observed: true }, pages: ["p2"] });
-    expect(runner.calls[before]!.script).toContain('const KEPT_PAGES = ["p2"]');
-    expect(runner.calls[before]!.script).toContain("task.adopt(tab.page, { as: KEPT_PAGES[index] })");
+    expect(runner.calls[before]!.script).toContain("const PAGE_IDENTITIES = ");
     expect(runner.adoptedAs.at(-1)).toBe("p2");
+    expect(runner.lastWorkLabels).toEqual(["p2"]);
 
     const evaluated = await provider.evaluate({ browseId, page: "p2", script: "document.title" });
     expect(evaluated).toMatchObject({ status: "ok", result: { observed: true }, pages: ["p2"] });
+  });
+
+  it("restores original labels when keep order differs from tab order", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new LabelLifecycleRunner();
+    const provider = new EgoProvider(config, { runner });
+    const p1Url = "https://page.test/p1";
+    const p2Url = "https://page.test/p2";
+    const browseId = await openWithTabs(dataDir, provider, runner, [
+      { label: "p1", url: p1Url, title: "Page 1" },
+      { label: "p2", url: p2Url, title: "Page 2" },
+    ]);
+
+    runner.workPages = ["p2", "p1"];
+    runner.workValue = { popup: { label: "p1" } };
+    const first = await provider.browse({
+      action: "call",
+      browseId,
+      page: "p2",
+      method: "page.snapshot",
+      args: [],
+    });
+    expect(first).toMatchObject({ status: "ok", pages: ["p2", "p1"] });
+
+    const before = runner.calls.length;
+    const second = await provider.browse({
+      action: "call",
+      browseId,
+      page: "p2",
+      method: "page.snapshot",
+      args: [],
+    });
+    expect(second).toMatchObject({ status: "ok", pages: ["p2"] });
+    expect(runner.lastWorkLabels).toEqual(["p1", "p2"]);
+    expect(runner.adoptedAs.slice(-2).sort()).toEqual(["p1", "p2"]);
+    expect(runner.calls[before]!.script).toContain("pageIdentityKey(tab)");
+  });
+
+  it("restores the correct label when a subset of tab-order Pages is kept", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new LabelLifecycleRunner();
+    const provider = new EgoProvider(config, { runner });
+    const p1Url = "https://page.test/p1";
+    const p2Url = "https://page.test/p2";
+    const p3Url = "https://page.test/p3";
+    const browseId = await openWithTabs(dataDir, provider, runner, [
+      { label: "p1", url: p1Url, title: "Page 1" },
+      { label: "p2", url: p2Url, title: "Page 2" },
+      { label: "p3", url: p3Url, title: "Page 3" },
+    ]);
+
+    runner.workPages = ["p2"];
+    const first = await provider.browse({
+      action: "call",
+      browseId,
+      page: "p2",
+      method: "page.snapshot",
+      args: [],
+    });
+    expect(first).toMatchObject({ status: "ok", pages: ["p2"] });
+
+    const second = await provider.evaluate({ browseId, page: "p2", script: "document.title" });
+    expect(second).toMatchObject({ status: "ok", pages: ["p2"] });
+    expect(runner.lastWorkLabels).toEqual(["p2"]);
+    expect(runner.labelForUrl(p1Url)).toBeNull();
+    expect(runner.labelForUrl(p3Url)).toBeNull();
+  });
+
+  it("errors on an unmatchable kept tab instead of adopting a guessed label", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new LabelLifecycleRunner();
+    const provider = new EgoProvider(config, { runner });
+    const p2Url = "https://page.test/p2";
+    const browseId = await openWithTabs(dataDir, provider, runner, [
+      { label: "p1", url: "https://page.test/p1", title: "Page 1" },
+      { label: "p2", url: p2Url, title: "Page 2" },
+    ]);
+
+    runner.workPages = ["p2"];
+    await provider.browse({ action: "call", browseId, page: "p2", method: "page.snapshot", args: [] });
+    const changedUrl = "https://page.test/changed";
+    runner.changeIdentity(p2Url, changedUrl);
+    const before = runner.calls.length;
+
+    await expect(provider.browse({
+      action: "call",
+      browseId,
+      page: "p2",
+      method: "page.snapshot",
+      args: [],
+    })).rejects.toMatchObject({ code: "EGO_PAGE_IDENTITY_MISMATCH" });
+    expect(runner.labelForUrl(changedUrl)).toBeNull();
+    expect(runner.calls.length).toBe(before + 1);
   });
 
   it("still rejects a genuinely missing label after a kept non-p1 round", async () => {

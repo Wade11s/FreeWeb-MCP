@@ -67,6 +67,11 @@ export interface EgoProviderOptions {
 
 type EgoPayload = Record<string, unknown>;
 
+interface EgoPageIdentity {
+  url: string | null;
+  title: string | null;
+}
+
 interface EgoTaskRecord {
   browseId: string;
   spaceId: number;
@@ -78,6 +83,8 @@ interface EgoTaskRecord {
   status: "active" | "handoff" | "reaping";
   ownership: string;
   pages: string[];
+  /** Stable Tab identity recorded before finish(keep), used to restore labels on claim. */
+  pageIdentities?: Record<string, EgoPageIdentity>;
   /**
    * Present only while a reap finish is in flight. The value is written under the registry
    * lock before the runtime call, so the later delete can prove the record is still the
@@ -107,8 +114,10 @@ interface ManagedScriptOptions {
   profileId: string | null;
   pageLabel: string;
   keepCount: number;
-  /** Labels of the Pages this round must keep, in the same order as the kept tabs. */
+  /** Labels of the Pages this round must keep; never zipped onto Tab order. */
   keptPages: readonly string[];
+  /** Saved label -> Tab identity map from the previous round. */
+  pageIdentities: Record<string, EgoPageIdentity>;
   operationCode: string;
   marker: string;
   /** Absolute path the script uses when the payload is too large for stdout. */
@@ -180,6 +189,19 @@ const HANDOFF_RESUME_HINT = "takeOverTaskSpace(spaceId)";
 
 function isRecord(value: unknown): value is EgoPayload {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parsePageIdentities(value: unknown): Record<string, EgoPageIdentity> | undefined {
+  if (!isRecord(value)) return undefined;
+  const result: Record<string, EgoPageIdentity> = {};
+  for (const [label, identity] of Object.entries(value)) {
+    if (!label || !isRecord(identity)) continue;
+    result[label] = {
+      url: typeof identity.url === "string" ? identity.url : null,
+      title: typeof identity.title === "string" ? identity.title : null,
+    };
+  }
+  return Object.keys(result).length ? result : undefined;
 }
 
 function json(value: unknown): string {
@@ -430,6 +452,18 @@ const emitEgoResult = async (payload) => {
 ${serializeScriptError()}`;
 }
 
+/** Tab identity helpers shared by acquisition and result emission. */
+function pageIdentityHelper(): string {
+  return `const pageIdentityOf = (value) => ({
+  url: typeof value?.url === "string" ? value.url : null,
+  title: typeof value?.title === "string" ? value.title : null,
+});
+const pageIdentityKey = (value) => JSON.stringify(pageIdentityOf(value));
+const pageIdentityMap = (tabs) => Object.fromEntries(tabs
+  .filter((tab) => typeof tab.label === "string" && tab.label)
+  .map((tab) => [tab.label, pageIdentityOf(tab)]));`;
+}
+
 interface AcquisitionScript {
   /** Constants declared before the try so the catch block can still report the task. */
   readonly constants: string;
@@ -437,19 +471,37 @@ interface AcquisitionScript {
   readonly body: string;
 }
 
-function acquisitionScript(options: Pick<ManagedScriptOptions, "taskId" | "name" | "profileId" | "keepCount" | "keptPages" | "pageLabel" | "requiresPage">, withPage: boolean): AcquisitionScript {
+function acquisitionScript(options: Pick<ManagedScriptOptions, "taskId" | "name" | "profileId" | "keepCount" | "keptPages" | "pageIdentities" | "pageLabel" | "requiresPage">, withPage: boolean): AcquisitionScript {
   const createCall = options.profileId === null
     ? "await taskSpace(SPACE_NAME)"
     : `await taskSpace(SPACE_NAME, { profileId: ${json(options.profileId)} })`;
-  // finish(keep) retains Pages but ends their labels, so a claim must re-adopt each
-  // kept tab with its original label. A plain adopt would silently relabel p2 as p1.
-  // finish({ keep: [] }) adopts nothing because it is about to release those tabs.
+  // finish(keep) retains tab objects in their own order but ends their labels. Match
+  // each unlabeled managed tab back to its recorded identity; zipping keep order onto
+  // tab order would relabel the wrong tab and run Page work against it.
   const adoptBlock = options.keptPages.length > 0
     ? `if (wasClaimed && KEPT_PAGES.length > 0) {
   const tabs = await task.tabs();
   const candidates = tabs.filter((tab) => !tab.label && tab.openedBy !== "user" && tab.openedBy !== "unknown");
-  for (const [index, tab] of candidates.slice(0, KEPT_PAGES.length).entries()) {
-    await task.adopt(tab.page, { as: KEPT_PAGES[index] });
+  const adoptedLabels = new Set();
+  for (const tab of candidates) {
+    const key = pageIdentityKey(tab);
+    const matches = Object.entries(PAGE_IDENTITIES).filter(([label, identity]) =>
+      KEPT_PAGES.includes(label) && !adoptedLabels.has(label) && pageIdentityKey(identity) === key);
+    if (matches.length !== 1) {
+      const missing = new Error("EGO_PAGE_IDENTITY_MISMATCH: cannot restore a kept Page label for " + key);
+      missing.code = "EGO_PAGE_IDENTITY_MISMATCH";
+      missing.details = { identity: pageIdentityOf(tab), keptPages: KEPT_PAGES };
+      throw missing;
+    }
+    await task.adopt(tab.page, { as: matches[0][0] });
+    adoptedLabels.add(matches[0][0]);
+  }
+  const unmatched = KEPT_PAGES.filter((label) => !adoptedLabels.has(label));
+  if (unmatched.length > 0) {
+    const missing = new Error("EGO_PAGE_IDENTITY_MISMATCH: kept Pages were not restored: " + unmatched.join(", "));
+    missing.code = "EGO_PAGE_IDENTITY_MISMATCH";
+    missing.details = { unmatched };
+    throw missing;
   }
 }
 `
@@ -465,6 +517,7 @@ function acquisitionScript(options: Pick<ManagedScriptOptions, "taskId" | "name"
 const SPACE_NAME = ${json(options.name)};
 const KEEP_COUNT = ${options.keepCount};
 const KEPT_PAGES = ${json(options.keptPages)};
+const PAGE_IDENTITIES = ${json(options.pageIdentities)};
 let RESOLVED_ID = TASK_ID === null ? -1 : TASK_ID;
 let task = null;
 ${withPage ? `const PAGE_LABEL = ${json(options.pageLabel)};\n` : ""}`;
@@ -504,6 +557,7 @@ function buildManagedScript(options: ManagedScriptOptions): string {
 `;
   const acquisition = acquisitionScript(options, true);
   return `${emitHelper(options.marker, options.artifactPath)}
+${pageIdentityHelper()}
 ${acquisition.constants}let egoCallValue;
 try {
 ${acquisition.body}
@@ -514,6 +568,7 @@ ${pageGuard}${options.operationCode}
     value: egoCallValue,
     task: { spaceId: task.spaceId ?? RESOLVED_ID, name: task.name, ownership: task.ownership },
     pages: pagesAfter.map((item) => item.label),
+    pageIdentities: pageIdentityMap(await task.tabs()),
     spaces: await listTaskSpaces(),
   });
 } catch (error) {
@@ -546,18 +601,21 @@ function buildFinishScript(options: FinishScriptOptions): string {
   // adopt pages that `finish({ keep: [] })` is about to release (close/reap).
   const keepCount = options.keep.length;
   const acquisition = acquisitionScript(
-    { taskId: options.task.spaceId, name: options.task.name, profileId: options.task.profileId, keepCount, keptPages: options.keep, pageLabel: options.task.pages[0] ?? "p1" },
+    { taskId: options.task.spaceId, name: options.task.name, profileId: options.task.profileId, keepCount, keptPages: options.keep, pageIdentities: options.task.pageIdentities ?? {}, pageLabel: options.task.pages[0] ?? "p1" },
     false,
   );
   return `${emitHelper(options.marker, options.artifactPath)}
+${pageIdentityHelper()}
 ${acquisition.constants}try {
 ${acquisition.body}
+  const tabsBeforeFinish = await task.tabs();
   const receipt = await task.finish({ keep: [${keep}] });
   await emitEgoResult({
     ok: true,
     value: { finished: true, receipt },
     task: { spaceId: RESOLVED_ID, name: SPACE_NAME, ownership: "user" },
     pages: [${keep}],
+    pageIdentities: pageIdentityMap(tabsBeforeFinish),
     receipt,
     spaces: await listTaskSpaces(),
   });
@@ -930,6 +988,7 @@ export class EgoProvider {
         pageLabel: input.page,
         keepCount: 1,
         keptPages: [input.page ?? "p1"],
+        pageIdentities: {},
         operationCode,
         kind: "managed",
       }));
@@ -1225,7 +1284,7 @@ egoCallValue = await page.evaluate(expression);`,
     return task.spaceId >= 0 ? { spaceId: task.spaceId } : {};
   }
 
-  private managedBase(task: EgoTaskRecord, pageLabel: string): Pick<ManagedScriptOptions, "taskId" | "name" | "profileId" | "pageLabel" | "keepCount" | "keptPages"> {
+  private managedBase(task: EgoTaskRecord, pageLabel: string): Pick<ManagedScriptOptions, "taskId" | "name" | "profileId" | "pageLabel" | "keepCount" | "keptPages" | "pageIdentities"> {
     return {
       taskId: task.spaceId,
       name: task.name,
@@ -1233,6 +1292,7 @@ egoCallValue = await page.evaluate(expression);`,
       pageLabel,
       keepCount: task.pages.length,
       keptPages: [...task.pages],
+      pageIdentities: { ...(task.pageIdentities ?? {}) },
     };
   }
 
@@ -1246,6 +1306,7 @@ egoCallValue = await page.evaluate(expression);`,
   private recordFromPayload(browseId: string, name: string, profileId: string, payload: EgoPayload): EgoTaskRecord {
     const now = this.nowFn();
     const taskInfo = isRecord(payload.task) ? payload.task : {};
+    const pageIdentities = parsePageIdentities(payload.pageIdentities);
     return {
       browseId,
       spaceId: typeof taskInfo.spaceId === "number" ? taskInfo.spaceId : -1,
@@ -1257,6 +1318,7 @@ egoCallValue = await page.evaluate(expression);`,
       status: "active",
       ownership: typeof taskInfo.ownership === "string" ? taskInfo.ownership : "agent",
       pages: Array.isArray(payload.pages) ? payload.pages.filter((page): page is string => typeof page === "string").slice(0, 20) : ["p1"],
+      ...(pageIdentities ? { pageIdentities } : {}),
     };
   }
 
@@ -1269,6 +1331,8 @@ egoCallValue = await page.evaluate(expression);`,
       const pages = payload.pages.filter((page): page is string => typeof page === "string").slice(0, 20);
       if (pages.length) task.pages = pages;
     }
+    const pageIdentities = parsePageIdentities(payload.pageIdentities);
+    if (pageIdentities) task.pageIdentities = pageIdentities;
     task.updatedAt = now;
     task.lastActiveAt = now;
   }
@@ -1327,6 +1391,7 @@ egoCallValue = await page.evaluate(expression);`,
       pageLabel: task.pages[0] ?? "p1",
       keepCount: keep.length,
       keptPages: keep,
+      pageIdentities: { ...(task.pageIdentities ?? {}) },
       operationCode: "",
       kind: "finish",
       timeoutMs,
@@ -1588,6 +1653,7 @@ egoCallValue = await page.evaluate(expression);`,
         if (!isRecord(value) || typeof value.spaceId !== "number" || typeof value.createdAt !== "number" || typeof value.lastActiveAt !== "number") {
           throw new FreeWebError("EGO_REGISTRY_CORRUPT", "Invalid ego task registry entry", { provider: PROVIDER });
         }
+        const pageIdentities = parsePageIdentities(value.pageIdentities);
         tasks[browseId] = {
           browseId,
           spaceId: value.spaceId,
@@ -1599,6 +1665,7 @@ egoCallValue = await page.evaluate(expression);`,
           status: value.status === "handoff" ? "handoff" : value.status === "reaping" ? "reaping" : "active",
           ownership: typeof value.ownership === "string" ? value.ownership : "agent",
           pages: Array.isArray(value.pages) ? value.pages.filter((page): page is string => typeof page === "string") : ["p1"],
+          ...(pageIdentities ? { pageIdentities } : {}),
           ...(typeof value.reapToken === "string" ? { reapToken: value.reapToken } : {}),
           ...(value.reapPreviousStatus === "handoff" || value.reapPreviousStatus === "active"
             ? { reapPreviousStatus: value.reapPreviousStatus }
