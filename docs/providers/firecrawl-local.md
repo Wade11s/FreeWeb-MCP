@@ -2,6 +2,25 @@
 
 The certified baseline is firecrawl-local 0.1.0. The local binary was found at /Users/hwj/.cargo/bin/firecrawl-local on the development machine. Other versions are reported by doctor as not fully certified rather than silently treated as identical.
 
+## Installation and platform evidence
+
+`freeweb-mcp init` installs only when no `firecrawl-local` executable is detected. The exact request is:
+
+```text
+cargo install firecrawl-local --version 0.1.0
+```
+
+The version pin is `CERTIFIED_FIRECRAWL_VERSION = "0.1.0"` in `src/init/components/firecrawl.ts`; the install argument list is built from that constant. Initialization does not run `cargo install firecrawl-local` without the version, does not clone a source branch, and does not select a fallback version. Before Cargo runs it probes `rustc --version`, `cargo --version`, and `cc --version`. Missing prerequisites produce `Pending` with official guidance: rustup for Rust/Cargo, `xcode-select --install` on macOS, and build-essential on Debian/Ubuntu. Initialization never installs those prerequisites, system package managers, Xcode command-line tools, or Chrome/Chromium. The installed binary is read from `CARGO_INSTALL_ROOT/bin`, `CARGO_HOME/bin`, `~/.cargo/bin`, or `PATH`, then must report exactly 0.1.0 and pass the shared health check before it is recorded as Installed.
+
+| Platform | Initialization behavior | Official installation evidence | FreeWeb-MCP verification in this change |
+| --- | --- | --- | --- |
+| macOS | Automatic install after prerequisite checks | Official quickstart requires Rust and the Xcode command-line tools | Simulated with fake `rustc`/`cargo`/`cc` and fake Cargo output on macOS; no live Cargo build was performed |
+| Debian/Ubuntu | Automatic install after prerequisite checks | Official quickstart requires Rust and build-essential | Simulated only, with injected Debian/Ubuntu `os-release`; no live Debian or Ubuntu machine was used |
+| Windows | Detection and manual guidance only; no automatic-installation claim | Official quickstart documents the manual path | Simulated only |
+| Other platforms/distributions | Detection and manual guidance only; no automatic-installation claim | Official quickstart | Simulated only |
+
+An existing installation, including a version other than 0.1.0, is never upgraded, downgraded, or reinstalled. A newly installed binary is not certified merely because Cargo exited 0: a missing or different version, or a failed health check, is reported as Failed. A successful install records its resolved absolute path so a rerun verifies it instead of installing again. Chrome/Chromium is detected and reported as an optional JavaScript-rendering/screenshot enhancement; it is never installed and never a readiness condition.
+
 ## Process
 
 FreeWeb-MCP starts its own serve process with 127.0.0.1, an owned fixed or automatically selected port, FIRECRAWL_CLOUD=off and no --allow-private by default. It checks GET /health for status ok and engine firecrawl-local. It never reuses an unknown process on the configured port and only terminates its own child. Child environments use a whitelist rather than inheriting provider API keys, stdout/stderr are drained into bounded redacted buffers, and CLI commands have bounded output plus SIGTERM/SIGKILL/hard-deadline handling.
