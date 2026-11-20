@@ -386,6 +386,34 @@ describe("Firecrawl Local v0.1.0 provider", () => {
     expect(spawnCalls[0]?.env.FIRECRAWL_LOCAL_ALLOW_PRIVATE).toBe("true");
   });
 
+  it("starts a Crawl with the same public-only serve protection as Fetch", async () => {
+    const spawnCalls: SpawnCall[] = [];
+    const requests: HttpRequest[] = [];
+    const provider = new FirecrawlLocalProvider(config({ port: 34575 }), {
+      probePort: async () => false,
+      http: async (request) => {
+        requests.push(request);
+        if (request.method === "GET" && request.url.endsWith("/health")) return healthResponse();
+        return { status: 200, body: JSON.stringify({ success: true, id: "job-1" }) };
+      },
+      spawner: (call) => { spawnCalls.push(call); return new FakeChild(); },
+      sleep: async () => {},
+      now: () => 0,
+    });
+
+    // Wrapper validation runs before this Provider call; the serve process still keeps its
+    // own public-only protection instead of trusting the caller to have checked the target.
+    const started = await provider.startCrawl(crawlInputSchema.parse({ url: "https://public.fake-ip.test/crawl" }));
+
+    expect(started).toEqual({ id: "job-1" });
+    expect(spawnCalls[0]?.args).toEqual(["serve", "--host", "127.0.0.1", "--port", "34575"]);
+    expect(spawnCalls[0]?.args).not.toContain("--allow-private");
+    expect(spawnCalls[0]?.env.FIRECRAWL_CLOUD).toBe("off");
+    expect(spawnCalls[0]?.env.FIRECRAWL_LOCAL_ALLOW_PRIVATE).toBe("false");
+    const crawlRequest = requests.find((request) => request.method === "POST" && request.url.endsWith("/v2/crawl"));
+    expect(JSON.parse(crawlRequest?.body ?? "{}").url).toBe("https://public.fake-ip.test/crawl");
+  });
+
   it("cleans up its own child when health does not identify Firecrawl Local 0.1.0", async () => {
     let now = 0;
     const child = new FakeChild();

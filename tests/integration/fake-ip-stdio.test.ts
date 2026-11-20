@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import { chmod, copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -70,10 +70,28 @@ async function callMap(connected: Client, url: string) {
   return connected.callTool({ name: "map", arguments: { url } });
 }
 
-function errorPayload(result: Awaited<ReturnType<Client["callTool"]>>): Record<string, any> {
-  const block = result.content[0];
+async function callCrawl(connected: Client, url: string) {
+  return connected.callTool({
+    name: "crawl",
+    arguments: { url, formats: ["markdown", "links"] },
+  });
+}
+
+/** The structured tool failure is one JSON text block shaped as `{ error: { code, ... } }`. */
+function toolError(result: Awaited<ReturnType<Client["callTool"]>>): Record<string, any> {
+  const block = result.content?.[0];
   if (!block || block.type !== "text") throw new Error("Expected a text error block");
-  return JSON.parse(String(block.text)).error;
+  return JSON.parse(block.text).error;
+}
+
+function failureCode(result: Awaited<ReturnType<Client["callTool"]>>): string | undefined {
+  return toolError(result).code;
+}
+
+/** Crawl Job checkpoints live under the configured data directory. */
+async function crawlJobDirectories(): Promise<string[]> {
+  if (!root) return [];
+  return readdir(join(root, "data", "crawls")).catch(() => []);
 }
 
 afterEach(async () => {
@@ -202,7 +220,7 @@ describe("real stdio Map through controlled fake-ip DNS", () => {
     const result = await callMap(connected, "https://missing-trusted.fake-ip.test/");
 
     expect(result.isError).toBe(true);
-    expect(JSON.stringify(result.content)).toContain("FAKE_IP_DNS_UNVERIFIED");
+    expect(failureCode(result)).toBe("FAKE_IP_DNS_UNVERIFIED");
     expect((await events()).some((event) => event.kind === "trusted-a")).toBe(true);
     expect(await firecrawlEvents()).toEqual([]);
   });
@@ -213,7 +231,7 @@ describe("real stdio Map through controlled fake-ip DNS", () => {
     const result = await callMap(connected, "https://application-failure.fake-ip.test/");
 
     expect(result.isError).toBe(true);
-    expect(errorPayload(result)).toMatchObject({
+    expect(toolError(result)).toMatchObject({
       code: "ALL_PROVIDERS_FAILED",
       message: "Firecrawl Local Map failed",
       cause: "Controlled Map application failure",
@@ -252,7 +270,7 @@ describe("real stdio Map through controlled fake-ip DNS", () => {
     const result = await callMap(connected, "https://public.fake-ip.test/");
 
     expect(result.isError).toBe(true);
-    expect(JSON.stringify(result.content)).toContain("FAKE_IP_DNS_DETECTED");
+    expect(failureCode(result)).toBe("FAKE_IP_DNS_DETECTED");
     expect((await events()).some((event) => event.kind.startsWith("trusted-"))).toBe(false);
     expect(await firecrawlEvents()).toEqual([]);
   });
@@ -269,7 +287,139 @@ describe("real stdio Map through controlled fake-ip DNS", () => {
     const result = await callMap(connected, url);
 
     expect(result.isError).toBe(true);
-    expect(JSON.stringify(result.content)).toContain(code);
+    expect(failureCode(result)).toBe(code);
     expect(await firecrawlEvents()).toEqual([]);
+  });
+});
+
+describe("real stdio Crawl through controlled fake-ip DNS", () => {
+  it("starts, pages and completes a verified public Crawl Job with private access disabled", async () => {
+    const connected = await startClient();
+
+    const started = await callCrawl(connected, "https://public.fake-ip.test/crawl");
+    expect(started.isError).not.toBe(true);
+    const job = started.structuredContent as Record<string, any>;
+    expect(job).toMatchObject({ status: "scraping", providerJobId: "controlled-crawl", total: 0, completed: 0 });
+
+    const first = await connected.callTool({
+      name: "crawl_status",
+      arguments: { crawlId: job.crawlId, limit: 1 },
+    });
+    expect(first.isError).not.toBe(true);
+    expect(first.structuredContent).toMatchObject({
+      crawlId: job.crawlId,
+      status: "completed",
+      total: 2,
+      completed: 2,
+      offset: 0,
+      returned: 1,
+      hasMore: true,
+      partial: false,
+      pages: [{
+        url: "https://public.fake-ip.test/crawl",
+        title: "Controlled Crawl Root",
+        formats: { markdown: "controlled Crawl content for https://public.fake-ip.test/crawl" },
+      }],
+    });
+    expect((first.structuredContent as Record<string, any>).artifactId).toEqual(expect.any(String));
+
+    const second = await connected.callTool({
+      name: "crawl_status",
+      arguments: { crawlId: job.crawlId, offset: 1, limit: 1 },
+    });
+    expect(second.structuredContent).toMatchObject({
+      status: "completed",
+      total: 2,
+      completed: 2,
+      offset: 1,
+      returned: 1,
+      hasMore: false,
+      pages: [{
+        url: "https://public.fake-ip.test/crawl/next",
+        links: ["https://public.fake-ip.test/crawl/next"],
+        formats: {
+          markdown: "controlled Crawl content for https://public.fake-ip.test/crawl/next",
+          links: ["https://public.fake-ip.test/crawl/next"],
+        },
+      }],
+    });
+    // The terminal checkpoint Artifact is the same on every read of the Job.
+    expect((second.structuredContent as Record<string, any>).artifactId)
+      .toBe((first.structuredContent as Record<string, any>).artifactId);
+
+    const starts = (await firecrawlEvents()).filter((event) => event.kind === "serve-start");
+    expect(starts).toHaveLength(1);
+    // Provider-level public-only protection stays on: Crawl never widens it.
+    expect(starts[0]).toMatchObject({ cloud: "off", allowPrivate: "false" });
+    expect(starts[0]?.args).not.toContain("--allow-private");
+    expect((await firecrawlEvents()).filter((event) => event.kind === "crawl-start"))
+      .toEqual([{ kind: "crawl-start", id: "controlled-crawl", url: "https://public.fake-ip.test/crawl" }]);
+    // The verified fake-ip target reached the Provider exactly once, through trusted DNS.
+    expect((await events()).filter((event) => event.kind === "trusted-a"))
+      .toEqual([expect.objectContaining({ hostname: "public.fake-ip.test", servers: ["1.1.1.1", "2606:4700:4700::1111"] })]);
+  });
+
+  it("cancels an active verified public Crawl Job and preserves its checkpoint", async () => {
+    const connected = await startClient();
+
+    const started = await callCrawl(connected, "https://public.fake-ip.test/slow/start");
+    const job = started.structuredContent as Record<string, any>;
+    expect(job).toMatchObject({ status: "scraping", providerJobId: "controlled-slow-crawl" });
+
+    const cancelled = await connected.callTool({
+      name: "crawl_cancel",
+      arguments: { crawlId: job.crawlId },
+    });
+
+    expect(cancelled.isError).not.toBe(true);
+    expect(cancelled.structuredContent).toMatchObject({
+      crawlId: job.crawlId,
+      status: "cancelled",
+      total: 0,
+      completed: 0,
+      returned: 0,
+      hasMore: false,
+    });
+    expect((cancelled.structuredContent as Record<string, any>).artifactId).toEqual(expect.any(String));
+    expect((await firecrawlEvents()).filter((event) => event.kind === "crawl-cancel"))
+      .toEqual([{ kind: "crawl-cancel", id: "controlled-slow-crawl" }]);
+  });
+
+  it.each([
+    ["http://127.0.0.1/", "PRIVATE_URL_BLOCKED", false],
+    ["http://10.0.0.5/private", "PRIVATE_URL_BLOCKED", false],
+    ["https://198.18.0.1/", "PRIVATE_URL_BLOCKED", false],
+    ["https://mixed.fake-ip.test/", "PRIVATE_URL_BLOCKED", false],
+    ["https://private-trusted.fake-ip.test/", "PRIVATE_URL_BLOCKED", true],
+    ["https://unverified.fake-ip.test/", "FAKE_IP_DNS_UNVERIFIED", true],
+    ["https://empty-trusted.fake-ip.test/", "FAKE_IP_DNS_UNVERIFIED", true],
+  ])("refuses %s before creating a Crawl Job or invoking the Provider", async (url, code, trustedConsulted) => {
+    const connected = await startClient();
+
+    const result = await callCrawl(connected, url);
+
+    expect(result.isError).toBe(true);
+    expect(failureCode(result)).toBe(code);
+    expect(JSON.stringify(result.content)).not.toContain("crawlId");
+    // No Crawl Job record and no Firecrawl request at all: the local serve never starts.
+    expect(await crawlJobDirectories()).toEqual([]);
+    expect(await firecrawlEvents()).toEqual([]);
+    // Only DNS traffic is allowed to explain the refusal: no Provider or cloud request follows.
+    const log = await events();
+    expect(log.filter((event) => !event.kind.startsWith("system-") && !event.kind.startsWith("trusted-"))).toEqual([]);
+    expect(log.some((event) => event.kind.startsWith("trusted-"))).toBe(trustedConsulted);
+  });
+
+  it("refuses an all-fake-ip target with actionable detection when trusted DNS is unconfigured", async () => {
+    const connected = await startClient({ trusted: false });
+
+    const result = await callCrawl(connected, "https://public.fake-ip.test/crawl");
+
+    expect(result.isError).toBe(true);
+    expect(failureCode(result)).toBe("FAKE_IP_DNS_DETECTED");
+    expect(JSON.stringify(result.content)).toContain("restart the MCP server or reload the session");
+    expect(await crawlJobDirectories()).toEqual([]);
+    expect(await firecrawlEvents()).toEqual([]);
+    expect((await events()).some((event) => event.kind.startsWith("trusted-"))).toBe(false);
   });
 });
