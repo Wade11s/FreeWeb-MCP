@@ -10,6 +10,10 @@ import { createMcpServer } from "../../src/mcp/server.js";
 import type { FreeWebToolHandlers } from "../../src/mcp/runtime-interface.js";
 import type { BrowseInput, SearchInput } from "../../src/types.js";
 
+/** Deliberately not the current release: the MCP handshake must echo what it is given. */
+const ordinaryVersion = "1.2.3";
+const nonReleaseVersion = "2.0.0-rc.1+build.7";
+
 class FakeRuntime implements FreeWebToolHandlers {
   artifacts!: ArtifactStore;
   unrestricted = false;
@@ -47,7 +51,7 @@ beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "freeweb-mcp-test-"));
   runtime = new FakeRuntime();
   runtime.artifacts = new ArtifactStore({ root });
-  server = createMcpServer(runtime);
+  server = createMcpServer(runtime, ordinaryVersion);
   client = new Client({ name: "freeweb-test-client", version: "1.0.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);
@@ -61,6 +65,21 @@ afterEach(async () => {
 });
 
 describe("MCP public protocol seam", () => {
+  it.each([
+    ["ordinary", ordinaryVersion],
+    ["non-release", nonReleaseVersion],
+  ])("reports the %s package version during initialize", async (_kind, version) => {
+    await client.close();
+    await server.close();
+    server = createMcpServer(runtime, version);
+    client = new Client({ name: "freeweb-version-test", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    expect(client.getServerVersion()).toMatchObject({ name: "freeweb-mcp", version });
+  });
+
   it("lists eight tools by default and passes parsed Search defaults", async () => {
     const listed = await client.listTools();
     expect(listed.tools.map((tool) => tool.name)).toEqual([
@@ -95,7 +114,7 @@ describe("MCP public protocol seam", () => {
       timedOut: false,
       mayHaveLateEffects: true,
     });
-    server = createMcpServer(runtime);
+    server = createMcpServer(runtime, ordinaryVersion);
     client = new Client({ name: "freeweb-unrestricted-test", version: "1.0.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await server.connect(serverTransport);
