@@ -7,15 +7,15 @@ Latest local verification for the MVP:
 ```text
 npm run check
   TypeScript: passed
-  Unit tests: 340 passed across 12 files
-  In-memory and real-stdio integration tests: 7 passed across 2 files
+  Unit tests: 427 passed across 14 files
+  In-memory, real-stdio and external CLI integration tests: 21 passed across 3 files
   Build: passed
 
 npm audit
   0 vulnerabilities
 ```
 
-The stdio tests spawn `dist/cli.js` and verify the default eight-tool list and opt-in nine-tool list. Mock/provider tests are not counted as live provider verification.
+The stdio tests spawn `dist/cli.js` with the explicit `mcp` command and verify the default eight-tool list and opt-in nine-tool list. The external CLI tests spawn the built executable to verify no-argument help, command help and help targets, both version flags, configuration-independent help/version behavior, strict usage errors with stderr diagnostics, and MCP stdout purity. Mock/provider tests are not counted as live provider verification.
 
 ## Live providers
 

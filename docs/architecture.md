@@ -1,6 +1,12 @@
 # Architecture
 
-FreeWeb-MCP is a local, single-user Node.js 22+ TypeScript MCP server. The public seam is nine MCP tools plus read-only Artifact Resources; stdio is the only transport in the MVP.
+FreeWeb-MCP is a local, single-user Node.js 22.12+ TypeScript MCP server. The public seam is nine MCP tools plus read-only Artifact Resources; stdio is the only transport in the MVP.
+
+## Command line
+
+The package exposes one executable, `freeweb-mcp`. A Commander-based dispatcher owns command routing with strict argument handling: `mcp`, `doctor [--json]`, `print-config`, global and command help (`help [command]`, `--help`, `-h`), and the version flags `-v`/`--version`. Running the executable without arguments prints help and exits 0 without creating providers or loading business configuration; the MCP server starts only through the explicit `mcp` command. Unknown commands, unknown help targets, unknown options, and excess positional arguments are usage errors with exit code 1 and diagnostics on stderr. Help and version output stay on stdout.
+
+The executable entry point is the only code that reads argv, writes to the process streams, or terminates the process; it hands those powers to the dispatcher as an injectable context, isolating Commander's output and exit hooks at the CLI boundary so tests and the MCP stdio stream stay deterministic. `doctor` and `mcp` load and validate business configuration inside their handlers; help, version, and `print-config` never touch it. The `mcp` handler owns runtime creation, stdio serving, signal handling, and the orderly shutdown deadline; stdout stays reserved for JSON-RPC, and startup and shutdown diagnostics go to stderr.
 
 ## Modules
 
