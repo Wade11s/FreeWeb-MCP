@@ -15,11 +15,11 @@ Read this before spawning or steering a `rex-subagent`. Explicit user instructio
 | Task | Primary pool | Backups |
 | --- | --- | --- |
 | File location, log summarization, mechanical extraction | `magpie/workbuddy/deepseek-v4.1-flash` + `off` for pure extraction or `low` for light synthesis | `magpie/amd-radeon-cloud/DeepSeek-V4.1-Flash` + `low`; `magpie/deepai/deepseek-v4.1-flash` + `minimal/low` |
-| Read-only code exploration, routine research | `magpie/workbuddy/hy4flash-free` + `high` | `magpie/stepfun-cn/step-5-preview` + `medium`; `magpie/zcode/GLM-5.3-Flash` + `high`; `magpie/deepai/glm-5.3-flash` + `medium` |
+| Read-only code exploration, routine research | `magpie/workbuddy/hy4flash-free` + `high` | `magpie/stepfun-cn/step-5-preview` + `medium`; `magpie/zhipu/glm-5.3-flash` + `high`; `magpie/deepai/glm-5.3-flash` + `medium` |
 | Routine implementation, localized fixes, test runs | `magpie/devin/swe-2-flash` + `high`; `magpie/workbuddy/hy4flash-free` + `high`; `magpie/mistral/deepseek-v4-1-flash-1017` + `high` | `magpie/kimi-code-cn/k3.1-pro` + `high`; `magpie/deepai/deepseek-v4.1-flash` + `high` |
-| Cross-module implementation, difficult debugging, architecture analysis | `magpie/kimi-code-cn/k3.1-pro` + `high → max` | `magpie/zcode/GLM-5.3` + `high → max` |
-| Independent code review, second opinion | `magpie/grok/grok-4.7-build-fast@500k` + `high`; `magpie/zcode/GLM-5.3` + `high` | `magpie/stepfun-cn/step-5-preview` + `high`; `magpie/deepai/muse-ember` + `medium` |
-| Security review, data-loss risk, final high-risk review | `magpie/grok/grok-4.7@500k` + `xhigh` | A different model family from the implementer: `magpie/zcode/GLM-5.3` + `max` or `magpie/kimi-code-cn/k3.1-pro` + `max` |
+| Cross-module implementation, difficult debugging, architecture analysis | `magpie/kimi-code-cn/k3.1-pro` + `high → max` | `magpie/zhipu/glm-5.3` + `high → max` |
+| Independent code review, second opinion | `magpie/grok/grok-4.7-build-fast@500k` + `high`; `magpie/zhipu/glm-5.3` + `high` | `magpie/stepfun-cn/step-5-preview` + `high`; `magpie/deepai/muse-ember` + `medium` |
+| Security review, data-loss risk, final high-risk review | `magpie/grok/grok-4.7@500k` + `xhigh` | A different model family from the implementer: `magpie/zhipu/glm-5.3` + `max` or `magpie/kimi-code-cn/k3.1-pro` + `max` |
 
 ## Load balancing
 
@@ -35,7 +35,7 @@ For each new independent-review task, alternate between:
 
 ```text
 magpie/grok/grok-4.7-build-fast@500k:high
-↔ magpie/zcode/GLM-5.3:high
+↔ magpie/zhipu/glm-5.3:high
 ```
 
 Assign parallel independent tasks to different primary models when practical. When multiple reviewers inspect the same change, use both reviewer primaries. Prefer a reviewer from a different model family than the implementer.
