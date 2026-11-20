@@ -405,7 +405,7 @@ describe("init existing configuration handling", () => {
     expect(((await readConfigFile()).firecrawl as Record<string, unknown>).binary).toBe(binary);
   });
 
-  it("keeps the stale configured path when the repair is declined", async () => {
+  it("verifies the stale configured path when its repair is declined without an env override", async () => {
     await writeFakeFirecrawl();
     await writeExistingConfig({ firecrawl: { binary: "/gone/firecrawl-local" } });
     const fake = fakeIo(["y", "n"]);
@@ -414,6 +414,22 @@ describe("init existing configuration handling", () => {
     expect(fake.out()).toContain("Kept firecrawl.binary: /gone/firecrawl-local");
     expect(((await readConfigFile()).firecrawl as Record<string, unknown>).binary).toBe("/gone/firecrawl-local");
     expect(fake.out()).toContain("Firecrawl Local: Failed");
+    expect(fake.out()).toContain("spawn /gone/firecrawl-local ENOENT");
+    // The working PATH fallback was not silently verified instead.
+    expect(await readLogLines(join(root, "firecrawl.log"))).toEqual([]);
+  });
+
+  it("verifies the env override when a stale-path repair is declined", async () => {
+    const { binary } = await writeFakeFirecrawl();
+    await writeExistingConfig({ firecrawl: { binary: "/gone/firecrawl-local" } });
+    const fake = fakeIo(["y", "n"]);
+    const code = await runInit(fake.io, deps({ env: baseEnv({ FIRECRAWL_LOCAL_BIN: binary }) }));
+    expect(code).toBe(0);
+    expect(fake.out()).toContain("Kept firecrawl.binary: /gone/firecrawl-local");
+    expect(fake.out()).toContain(`Firecrawl Local: Installed - existing installation at ${binary} verified`);
+    expect(fake.out()).not.toContain("spawn /gone/firecrawl-local ENOENT");
+    // Declining the repair preserves the file even though runtime and doctor use the override.
+    expect(((await readConfigFile()).firecrawl as Record<string, unknown>).binary).toBe("/gone/firecrawl-local");
   });
 
   it("makes no changes to an already-complete configuration and is idempotent on rerun", async () => {

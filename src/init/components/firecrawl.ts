@@ -162,9 +162,14 @@ export function createFirecrawlComponent(deps: FirecrawlComponentDeps = {}): Ini
       };
     }
     const binaryRepair = input.appliedRepairs.find((repair) => repair.setting === "firecrawl.binary");
+    // A confirmed repair changes the effective configured path. Without one,
+    // an env-selected detection still wins at runtime; otherwise a stale
+    // configured path must be verified (and fail) rather than the PATH fallback.
     const binary = typeof binaryRepair?.newValue === "string"
       ? binaryRepair.newValue
-      : detection.staleConfiguredPath ?? detection.binary!;
+      : detection.source === "env"
+        ? detection.binary!
+        : detection.staleConfiguredPath ?? detection.binary!;
     const probe = await runner({
       command: binary,
       args: ["--version"],
