@@ -376,7 +376,7 @@ export class EgoProcessRunner implements EgoRunner {
 function serializeScriptError(): string {
   return `const serializeEgoError = (error) => {
   const value = { name: error?.name ?? "Error", message: error?.message ?? String(error) };
-  for (const key of ["code", "executionStopped", "pageResponsive", "mayHaveLateEffects", "stopped"]) {
+  for (const key of ["code", "details", "executionStopped", "pageResponsive", "mayHaveLateEffects", "stopped"]) {
     if (error && key in error) value[key] = error[key];
   }
   return value;
@@ -435,7 +435,7 @@ interface AcquisitionScript {
   readonly body: string;
 }
 
-function acquisitionScript(options: Pick<ManagedScriptOptions, "taskId" | "name" | "profileId" | "keepCount" | "pageLabel">, withPage: boolean): AcquisitionScript {
+function acquisitionScript(options: Pick<ManagedScriptOptions, "taskId" | "name" | "profileId" | "keepCount" | "pageLabel" | "requiresPage">, withPage: boolean): AcquisitionScript {
   const createCall = options.profileId === null
     ? "await taskSpace(SPACE_NAME)"
     : `await taskSpace(SPACE_NAME, { profileId: ${json(options.profileId)} })`;
@@ -478,7 +478,14 @@ task = !spaceEntry
       ? await takeOverTaskSpace(RESOLVED_ID)
       : await taskSpace(RESOLVED_ID);
 ${adoptBlock}${withPage ? `const managedPages = await task.pages();
-const page = managedPages.find((item) => item.label === PAGE_LABEL) ?? managedPages[0];` : ""}`;
+const page = managedPages.find((item) => item.label === PAGE_LABEL);
+${options.requiresPage === false ? "" : `if (!page) {
+  const availablePages = managedPages.map((item) => item.label);
+  const missing = new Error("EGO_PAGE_NOT_FOUND: Page " + PAGE_LABEL + " was not found; available Page labels: " + (availablePages.length ? availablePages.join(", ") : "none"));
+  missing.code = "EGO_PAGE_NOT_FOUND";
+  missing.details = { requestedPage: PAGE_LABEL, availablePages };
+  throw missing;
+}`}` : ""}`;
   return { constants, body };
 }
 
@@ -1052,6 +1059,7 @@ export class EgoProvider {
         });
       }
     }
+    if (plan.spec.target !== "task") this.requirePage(task, input.page);
     const { payload } = await this.runManaged({
       ...this.managedBase(task, input.page),
       operationCode: renderEgoCall(plan),
@@ -1150,6 +1158,7 @@ egoCallValue = {
     const registry = await this.readRegistry();
     const task = this.requireTask(registry, input.browseId);
     this.requireWorkAllowed(task);
+    this.requirePage(task, input.page);
     const scriptLiteral = json(input.script);
     const argumentLiteral = input.argument === undefined ? "undefined" : json(input.argument);
     const { payload } = await this.runManaged({
@@ -1176,6 +1185,17 @@ egoCallValue = await page.evaluate(expression);`,
     const warnings = await this.finishAndUpdate(registry, task, keep);
     await this.writeRegistry(registry);
     return this.outputFor(task, payload, keep, warnings);
+  }
+
+  private requirePage(task: EgoTaskRecord, requestedPage: string): void {
+    const availablePages = [...task.pages];
+    if (availablePages.includes(requestedPage)) return;
+    const labels = availablePages.length ? availablePages.join(", ") : "none";
+    throw new FreeWebError(
+      "EGO_PAGE_NOT_FOUND",
+      `Page "${requestedPage}" was not found; available Page labels: ${labels}`,
+      { provider: PROVIDER, details: { requestedPage, availablePages } },
+    );
   }
 
   private requireWorkAllowed(task: EgoTaskRecord, allowHandoff = false): void {

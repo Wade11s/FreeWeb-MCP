@@ -54,6 +54,13 @@ class LifecycleRunner implements EgoRunner {
   }
 }
 
+function errorPayload(result: CallToolResult): Record<string, unknown> {
+  const text = result.content.find((block) => block.type === "text");
+  if (!text || text.type !== "text") throw new Error("expected a text error block");
+  const parsed = JSON.parse(text.text) as { error: Record<string, unknown> };
+  return parsed.error;
+}
+
 function withPayload(request: EgoRunRequest, payload: Record<string, unknown>): EgoRunResult {
   return {
     exitCode: 0,
@@ -235,9 +242,11 @@ describe("MCP-visible Managed Browse handoff lifecycle", () => {
       arguments: { action: "call", browseId, page: "p9", method: "page.snapshot", args: [] },
     });
     expect(native.isError).toBe(true);
-    expect(JSON.stringify(native.content)).toContain("EGO_PAGE_NOT_FOUND");
-    expect(JSON.stringify(native.content)).toContain('"requestedPage":"p9"');
-    expect(JSON.stringify(native.content)).toContain('"availablePages":["p1"]');
+    expect(errorPayload(native)).toMatchObject({
+      code: "EGO_PAGE_NOT_FOUND",
+      requestedPage: "p9",
+      availablePages: ["p1"],
+    });
     expect(runtime.runner.calls.length).toBe(callsAfterOpen);
 
     const evaluated = await client.callTool({
@@ -245,9 +254,11 @@ describe("MCP-visible Managed Browse handoff lifecycle", () => {
       arguments: { browseId, page: "p9", script: "document.title" },
     });
     expect(evaluated.isError).toBe(true);
-    expect(JSON.stringify(evaluated.content)).toContain("EGO_PAGE_NOT_FOUND");
-    expect(JSON.stringify(evaluated.content)).toContain('"requestedPage":"p9"');
-    expect(JSON.stringify(evaluated.content)).toContain('"availablePages":["p1"]');
+    expect(errorPayload(evaluated)).toMatchObject({
+      code: "EGO_PAGE_NOT_FOUND",
+      requestedPage: "p9",
+      availablePages: ["p1"],
+    });
     expect(runtime.runner.calls.length).toBe(callsAfterOpen);
 
     const registryPath = join(root, "browse", "tasks.json");
@@ -263,9 +274,11 @@ describe("MCP-visible Managed Browse handoff lifecycle", () => {
       arguments: { browseId, script: "document.title" },
     });
     expect(defaulted.isError).toBe(true);
-    expect(JSON.stringify(defaulted.content)).toContain("EGO_PAGE_NOT_FOUND");
-    expect(JSON.stringify(defaulted.content)).toContain('"requestedPage":"p1"');
-    expect(JSON.stringify(defaulted.content)).toContain('"availablePages":["p2"]');
+    expect(errorPayload(defaulted)).toMatchObject({
+      code: "EGO_PAGE_NOT_FOUND",
+      requestedPage: "p1",
+      availablePages: ["p2"],
+    });
     expect(runtime.runner.calls.length).toBe(callsAfterRegistryEdit);
   });
 });

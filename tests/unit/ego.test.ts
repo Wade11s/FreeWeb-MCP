@@ -17,7 +17,7 @@ import {
   type EgoSpawnFn,
 } from "../../src/providers/ego.js";
 import { isSafeNavigationUrl, parseEgoUrl, prepareEgoCall } from "../../src/providers/ego-methods.js";
-import { browseOutputSchema } from "../../src/types.js";
+import { browseOutputSchema, type BrowseEvaluateInput, type BrowseInput } from "../../src/types.js";
 
 type EgoPayload = Record<string, unknown>;
 
@@ -1167,7 +1167,7 @@ describe("EgoProvider Page label resolution", () => {
     const browseId = await openTaskWithPages(provider, runner, ["p2"]);
     runner.reset();
 
-    await expect(provider.evaluate({ browseId, script: "document.title" })).rejects.toMatchObject({
+    await expect(provider.evaluate({ browseId, script: "document.title" } as BrowseEvaluateInput)).rejects.toMatchObject({
       code: "EGO_PAGE_NOT_FOUND",
       options: { details: { requestedPage: "p1", availablePages: ["p2"] } },
     });
@@ -1176,7 +1176,7 @@ describe("EgoProvider Page label resolution", () => {
       browseId,
       method: "page.snapshot",
       args: [],
-    })).rejects.toMatchObject({
+    } as unknown as BrowseInput)).rejects.toMatchObject({
       code: "EGO_PAGE_NOT_FOUND",
       options: { details: { requestedPage: "p1", availablePages: ["p2"] } },
     });
