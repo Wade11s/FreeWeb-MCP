@@ -54,12 +54,23 @@ describe("doctor Node.js runtime floor", () => {
     expect(report.checks[0]?.message).toContain("22.12.0");
   });
 
-  it("passes the required node check at and above the package minimum", async () => {
+  it("passes release versions at or above the package minimum, ignoring build metadata", async () => {
     const config = await testConfig();
-    for (const nodeVersion of ["22.12.0", "22.12.1", "23.0.0"]) {
+    for (const nodeVersion of ["22.12.0", "22.12.0+build.1", "22.12.1", "23.0.0", "v23.0.0", "v26.0.0", "26.13.1"]) {
+      const expected = nodeVersion.startsWith("v") ? nodeVersion : `v${nodeVersion}`;
       const report = await runDoctor(config, { minimumNodeVersion: [22, 12, 0], nodeVersion });
-      expect(report.checks[0]).toMatchObject({ name: "node", ok: true, required: true, version: `v${nodeVersion}` });
+      expect(report.checks[0]).toMatchObject({ name: "node", ok: true, required: true, version: expected });
       expect(report.checks[0]?.message).toBeUndefined();
+    }
+  });
+
+  it("fails every prerelease, matching npm's release-only engines range", async () => {
+    const config = await testConfig();
+    for (const nodeVersion of ["22.12.0-rc.1", "v22.12.0-rc.1", "22.12.0-0", "23.0.0-rc.1", "22.12.1-rc.0"]) {
+      const expected = nodeVersion.startsWith("v") ? nodeVersion : `v${nodeVersion}`;
+      const report = await runDoctor(config, { minimumNodeVersion: [22, 12, 0], nodeVersion });
+      expect(report.checks[0]).toMatchObject({ name: "node", ok: false, required: true, version: expected });
+      expect(report.checks[0]?.message).toContain("22.12.0");
     }
   });
 

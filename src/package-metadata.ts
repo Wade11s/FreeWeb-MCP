@@ -3,6 +3,13 @@ import { readFile } from "node:fs/promises";
 /** A parsed semantic version: major, minor, and patch, with any suffix dropped. */
 export type Version = readonly [major: number, minor: number, patch: number];
 
+/** A parsed version string: its numeric triple plus whether it is a prerelease. */
+export interface ParsedVersion {
+  readonly version: Version;
+  /** True for a `-prerelease` suffix; `+build` metadata is not a prerelease. */
+  readonly prerelease: boolean;
+}
+
 /**
  * The package's own declared identity. package.json is the single source of
  * truth: the CLI version and the Node.js runtime floor are read from it
@@ -16,13 +23,16 @@ export interface PackageMetadata {
 
 /** The only `engines.node` shape the package uses: a plain `>=x.y.z` floor. */
 const MINIMUM_NODE_RANGE = /^>=\s*(\d+)\.(\d+)\.(\d+)$/;
-const VERSION = /^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/;
+const VERSION = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;
 
-/** Parses `22.12.0` or `v22.12.0-nightly` into a comparable version. */
-export function parseVersion(value: string): Version | undefined {
+/** Parses `22.12.0`, `v22.12.0-nightly`, or `22.12.0+build.1` into a comparable version. */
+export function parseVersion(value: string): ParsedVersion | undefined {
   const match = VERSION.exec(value.trim());
   if (!match) return undefined;
-  return [Number(match[1]), Number(match[2]), Number(match[3])];
+  return {
+    version: [Number(match[1]), Number(match[2]), Number(match[3])],
+    prerelease: match[4] !== undefined,
+  };
 }
 
 /** Negative when `a` precedes `b`, zero when they are equal, positive when `a` follows `b`. */
@@ -34,10 +44,16 @@ export function compareVersions(a: Version, b: Version): number {
   return 0;
 }
 
-/** True when `actual` is a parseable version at or above `minimum`. */
+/**
+ * True when `actual` is a parseable release version at or above `minimum`.
+ * The floor is release-only, matching npm's node-semver for `>=x.y.z` with
+ * `includePrerelease` off: a prerelease such as `22.12.0-rc.1` never
+ * satisfies it, while build metadata such as `22.12.0+build.1` is ignored
+ * and compares equal to the bare triple.
+ */
 export function isAtLeast(actual: string, minimum: Version): boolean {
   const parsed = parseVersion(actual);
-  return parsed !== undefined && compareVersions(parsed, minimum) >= 0;
+  return parsed !== undefined && !parsed.prerelease && compareVersions(parsed.version, minimum) >= 0;
 }
 
 /** Renders a version the way package.json writes it, e.g. `22.12.0`. */
