@@ -1,9 +1,14 @@
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { execFile } from "node:child_process";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
+import { readPackageMetadata } from "../../src/package-metadata.js";
+
+const execFileAsync = promisify(execFile);
 
 let root: string | undefined;
 let client: Client | undefined;
@@ -37,6 +42,11 @@ async function startClient(
   return client;
 }
 
+async function builtCliVersion(): Promise<string> {
+  const { stdout } = await execFileAsync(process.execPath, [resolve("dist/cli.js"), "--version"]);
+  return stdout.trim();
+}
+
 afterEach(async () => {
   await client?.close().catch(() => undefined);
   await transport?.close().catch(() => undefined);
@@ -47,6 +57,14 @@ afterEach(async () => {
 });
 
 describe("built stdio server started through the explicit mcp command", () => {
+  it("reports the package version during initialize, matching the CLI", async () => {
+    const connected = await startClient(false);
+    const metadata = await readPackageMetadata();
+
+    expect(connected.getServerVersion()).toMatchObject({ name: "freeweb-mcp", version: metadata.version });
+    expect(await builtCliVersion()).toBe(metadata.version);
+  });
+
   it("serves the default MCP tool list over a real child process", async () => {
     const connected = await startClient(false);
     const listed = await connected.listTools();

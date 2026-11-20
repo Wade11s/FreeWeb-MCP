@@ -167,6 +167,14 @@ const REAP_CLAIM_STALE_MS = 60_000;
 const DEFAULT_EGO = configFileSchema.parse({}).ego;
 const DEFAULT_INLINE_CHARS = configFileSchema.parse({}).artifacts.inlineNodeChars;
 const MISSING_SPACE_CODE = "EGO_SPACE_MISSING";
+/**
+ * ego-lite ends a handed-off round by discarding all script output and printing this owned
+ * guidance instead. The leading line is specific to user control (permission-prompt hard
+ * stops word it differently), and the resume hint proves the diagnostic is the terminal
+ * handoff contract rather than an arbitrary failure message.
+ */
+const HANDOFF_HARD_STOP_LINE = "Control of this task space is with the user";
+const HANDOFF_RESUME_HINT = "takeOverTaskSpace(spaceId)";
 
 function isRecord(value: unknown): value is EgoPayload {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -996,6 +1004,18 @@ export class EgoProvider {
       };
     }
     const task = this.requireTask(registry, input.browseId);
+    // A handed-off Space belongs to the user. Inspecting its persisted state must not run
+    // an ego call (which would be a hard stop), finish the Space, or take ownership back, so
+    // status reports the serialized registry record instead of touching the runtime.
+    if (task.status === "handoff") {
+      return {
+        browseId: task.browseId,
+        ...this.spaceIdFields(task),
+        status: "handoff",
+        result: { status: task.status, ownership: task.ownership, pages: task.pages },
+        pages: task.pages,
+      };
+    }
     this.requireWorkAllowed(task);
     const { payload } = await this.runManaged({
       ...this.managedBase(task, input.page),
@@ -1054,11 +1074,16 @@ export class EgoProvider {
       operationCode: "egoCallValue = await task.handOff();",
       kind: "managed",
       requiresPage: false,
+      handoff: true,
     });
     if (payload.ok === false) throw payloadError(payload);
+    this.updateRecord(task, payload);
+    // A confirmed handoff is the only transition that delegates ownership. Applying it after
+    // the payload update keeps a runtime-reported ownership from overwriting the handoff
+    // state. The registry entry keeps the same browseId and Space, so no replacement Task
+    // Space is created.
     task.status = "handoff";
     task.ownership = "agentDelegatedToUser";
-    this.updateRecord(task, payload);
     await this.writeRegistry(registry);
     return this.outputFor(task, payload, task.pages, [], "handoff");
   }
@@ -1080,6 +1105,8 @@ egoCallValue = {
     });
     if (payload.ok === false) throw payloadError(payload);
     this.updateRecord(task, payload);
+    // The take-over above returned control to the agent, and finishAndUpdate completes the
+    // resumed round. Clearing handoff status is what makes further Page work legal again.
     task.status = "active";
     const keep = this.requiredKeep(input.page, payload);
     const warnings = await this.finishAndUpdate(registry, task, keep);
@@ -1286,6 +1313,8 @@ egoCallValue = await page.evaluate(expression);`,
     kind: "managed" | "evaluate" | "finish";
     timeoutMs?: number;
     buildScript?: (marker: string, artifactPath: string) => string;
+    /** Only the handoff action may reinterpret a recognized terminal hard stop as success. */
+    handoff?: boolean;
   }): Promise<{ payload: EgoPayload }> {
     const marker = this.uuidFn();
     const artifactPath = join(this.dataDir, MANAGED_RESULT_DIR, `${this.uuidFn()}.json`);
@@ -1293,7 +1322,7 @@ egoCallValue = await page.evaluate(expression);`,
       ? options.buildScript(marker, artifactPath)
       : buildManagedScript({ ...options, marker, artifactPath });
     const invocation = await this.invoke(script, options.timeoutMs ?? MANAGED_TIMEOUT_MS, options.kind, marker);
-    const payload = this.requirePayload(invocation);
+    const payload = options.handoff ? this.requireHandoffPayload(invocation) : this.requirePayload(invocation);
     // Only consumeManagedResult may mint the resource link. Dropping anything the runtime
     // printed here keeps page-controlled data out of the Artifact ID position.
     delete payload.handoffArtifactId;
@@ -1349,6 +1378,28 @@ egoCallValue = await page.evaluate(expression);`,
       });
     }
     throw new FreeWebError("EGO_NO_RESULT", "ego-browser produced no result", { provider: PROVIDER });
+  }
+
+  /**
+   * Handoff-specific payload adapter. ego-lite reports a transferred Space by exiting zero
+   * with no marker payload and only the owned user-control hard-stop guidance, so that one
+   * recognized shape becomes a synthetic success. Every other missing-payload case still
+   * goes through requirePayload and keeps its original error, which also keeps the generic
+   * handling for open, status, call, evaluate and finish untouched.
+   */
+  private requireHandoffPayload(invocation: Invocation): EgoPayload {
+    if (invocation.payload) return invocation.payload;
+    const result = invocation.result;
+    const text = `${typeof result.stdout === "string" ? result.stdout : ""}\n${typeof result.stderr === "string" ? result.stderr : ""}`;
+    if (
+      result.exitCode === 0 &&
+      !result.timedOut &&
+      text.includes(HANDOFF_HARD_STOP_LINE) &&
+      text.includes(HANDOFF_RESUME_HINT)
+    ) {
+      return { ok: true, value: { handedOff: true } };
+    }
+    return this.requirePayload(invocation);
   }
 
   private async assertAllowedPath(ref: { kind: "upload" | "download"; path: string }): Promise<void> {

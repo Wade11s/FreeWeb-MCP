@@ -11,6 +11,8 @@
 // runs with `--offline`, resolving the package's dependencies from the local npm
 // cache that this repository's `npm install` populated. A cold cache fails the
 // run loudly instead of reaching the network.
+import { Client } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, readlink, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -115,6 +117,25 @@ function expectInstalled(args, expected, env) {
   return result;
 }
 
+/** Reads the installed MCP server's initialize identity over real stdio. */
+async function installedMcpVersion(cliPath, env) {
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [cliPath, "mcp"],
+    env,
+    cwd: repoRoot,
+    stderr: "pipe",
+  });
+  const client = new Client({ name: "freeweb-pack-verification", version: "1.0.0" });
+  try {
+    await client.connect(transport);
+    return client.getServerVersion();
+  } finally {
+    await client.close().catch(() => undefined);
+    await transport.close().catch(() => undefined);
+  }
+}
+
 async function main() {
   const packDir = await mkdtemp(join(tmpdir(), "freeweb-pack-"));
   const installDir = await mkdtemp(join(tmpdir(), "freeweb-install-"));
@@ -202,13 +223,28 @@ async function main() {
     };
     await mkdir(homeDir, { recursive: true });
 
+    const cliVersions = [];
     for (const flag of ["--version", "-v"]) {
       const version = expectInstalled([flag], 0, env);
       check(
         version.stdout.trim() === packageFile.version,
         `\`${binName} ${flag}\` printed ${JSON.stringify(version.stdout)}, expected ${packageFile.version}`,
       );
+      cliVersions.push(version.stdout.trim());
     }
+
+    const mcpIdentity = await installedMcpVersion(cliPath, env);
+    check(mcpIdentity !== undefined, "installed MCP initialize did not report a server identity");
+    check(mcpIdentity.name === "freeweb-mcp", `installed MCP server name was ${JSON.stringify(mcpIdentity.name)}`);
+    check(
+      mcpIdentity.version === packageFile.version,
+      `installed MCP initialize reported ${JSON.stringify(mcpIdentity.version)}, expected ${packageFile.version}`,
+    );
+    check(
+      cliVersions.every((version) => version === mcpIdentity.version),
+      `installed CLI and MCP versions disagree: ${JSON.stringify(cliVersions)} vs ${JSON.stringify(mcpIdentity.version)}`,
+    );
+    console.log(`installed initialize version: ${mcpIdentity.version} matches --version and package.json`);
 
     const noArgs = expectInstalled([], 0, env);
     check(noArgs.stdout.includes(`Usage: ${binName}`), "no-argument invocation did not print help");
