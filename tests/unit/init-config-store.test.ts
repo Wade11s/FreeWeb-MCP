@@ -131,6 +131,16 @@ describe("atomic configuration writes", () => {
     expect(await readdir(dirname(path))).toEqual(["config.json"]);
   });
 
+  it("rejects undeclared credential fields before creating or writing anything", async () => {
+    const store = new ConfigStore();
+    const path = join(root, "new-config", "config.json");
+    const file = newConfigFile();
+    const value = { ...file, tinyfish: { ...file.tinyfish, apiKey: "must-not-persist" } };
+
+    await expect(store.write(path, value)).rejects.toThrow();
+    await expect(readFile(path, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("replaces an existing file and leaves the original intact when rename fails", async () => {
     const path = configPath();
     const original = `${JSON.stringify({ firecrawl: { port: 3456 } }, null, 2)}\n`;

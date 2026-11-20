@@ -226,11 +226,14 @@ export class ConfigStore {
    * temporary file and leaves the original untouched.
    */
   async write(path: string, value: unknown): Promise<void> {
+    // Validate the fully patched object before even creating a directory.
+    // Strict schema fields prevent credential/unknown-key persistence.
+    const parsed = configFileSchema.parse(value);
     const directory = dirname(path);
     await this.fs.mkdir(directory, { recursive: true, mode: 0o700 });
     await this.fs.chmod(directory, 0o700);
     const temp = join(directory, `.${basename(path)}.tmp-${randomUUID()}`);
-    const data = `${JSON.stringify(value, null, 2)}\n`;
+    const data = `${JSON.stringify(parsed, null, 2)}\n`;
     try {
       const handle = await this.fs.open(temp, "wx", 0o600);
       try {
