@@ -1,14 +1,14 @@
 # Verification report
 
-Latest local verification for the MVP, the Initialization tickets (#21-#26), and the MCP correctness follow-ups (#28, #29, #31):
+Latest local verification for the MVP, the Initialization tickets (#21-#26), and the MCP correctness follow-ups (#28, #29, #31, #33):
 
 ## Automated checks
 
 ```text
 npm run check
   TypeScript: passed
-  Unit tests: 558 passed across 25 files
-  In-memory, real-stdio and external CLI integration tests: 132 passed across 9 files
+  Unit tests: 570 passed across 25 files
+  In-memory, real-stdio and external CLI integration tests: 134 passed across 9 files
   Build: passed
 
 npm audit

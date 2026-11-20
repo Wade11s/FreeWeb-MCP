@@ -114,6 +114,7 @@ export const crawlPageSchema = z.object({
   finalUrl: z.string().optional(),
   title: z.string().optional(),
   formats: z.record(z.string(), z.unknown()),
+  links: z.array(z.string()).optional(),
   truncated: z.boolean().optional(),
 });
 export const crawlOutputSchema = z.object({
