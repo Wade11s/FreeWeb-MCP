@@ -1,14 +1,14 @@
 # Verification report
 
-Latest local verification for the MVP:
+Latest local verification for the MVP plus the first Initialization ticket:
 
 ## Automated checks
 
 ```text
 npm run check
   TypeScript: passed
-  Unit tests: 435 passed across 15 files
-  In-memory, real-stdio and external CLI integration tests: 41 passed across 4 files
+  Unit tests: 488 passed across 21 files
+  In-memory, real-stdio and external CLI integration tests: 74 passed across 6 files
   Build: passed
 
 npm audit
@@ -16,6 +16,10 @@ npm audit
 ```
 
 The stdio tests spawn `dist/cli.js` with the explicit `mcp` command and verify the default eight-tool list and opt-in nine-tool list. The external CLI tests spawn the built executable with a temporary HOME and injected fake provider binaries to verify no-argument help, command help and help targets, both version flags, configuration-independent help/version behavior, strict usage errors with stderr diagnostics, and MCP stdout purity. The doctor CLI tests assert the text report and redacted configuration, JSON-only stdout, exit status for failed required checks and optional warnings, the Node.js floor read from a swapped package.json `engines.node`, an invalid business configuration reported as one failed required `configuration` check with a still-parseable JSON report, and unknown-option and excess-argument usage errors; they also record provider argv to prove doctor only ever asks for `--version`. The print-config tests parse the exact emitted JSON, verify it contains only the executable-native `freeweb-mcp mcp` entry with valid, missing, and invalid business configuration, and reject unknown options and excess print-config arguments. Mock/provider tests are not counted as live provider verification.
+
+`init` has two distinct automated seams. In-process `runInit` integration tests use temporary HOME/config directories, controlled environments, and fake provider executables to cover filesystem-only detection before consent, plan display, refusal and terminal EOF, damaged-configuration backup/rebuild and secret-safe refusal, stale-path repair confirmation/decline and environment-selected replacements, valid-config preservation and missing-default completion, atomic writes and 0600/0700 permissions, non-overwriting private backups, interrupted writes and rerun recovery, owned loopback Cloud Off health checks and bounded cleanup, cleanup failures, certified/uncertified versions versus health failures, required doctor failure and its incomplete-run footer, doctor invocation without MCP startup, other-client non-interference, and exit-code combinations. These tests do not spawn the built CLI.
+
+The built-CLI tests separately cover global/command help, strict option and argument rejection, and non-TTY refusal without reads, writes, or provider launches. On macOS with `expect`, a real pseudo-terminal drives exactly three interactive scenarios through `dist/cli.js`: the confirmed happy path (including verification, configuration write, file mode 0600, doctor, and exit 0), plan decline without changes, and malformed-configuration backup/rebuild. Stale paths, preservation, uncertified-versus-health failure, backup non-overwrite, directory permissions, interrupted writes, and doctor-failure exit are covered only at the `runInit` seam; no PTY coverage is claimed for them. No live GUI onboarding was performed.
 
 ## Live providers
 

@@ -30,6 +30,7 @@ The package exposes one executable, `freeweb-mcp` (`dist/cli.js` in a checkout):
 freeweb-mcp               Print help; never starts the server
 freeweb-mcp mcp           Start the stdio MCP server
 freeweb-mcp doctor [--json]  Check local provider configuration
+freeweb-mcp init          Interactively initialize providers and safe configuration
 freeweb-mcp print-config  Print an example MCP client configuration
 freeweb-mcp help [command]  Print global or command help
 freeweb-mcp -v | --version  Print the version
@@ -96,6 +97,21 @@ node dist/cli.js mcp   # same as npm start
 ```
 
 `doctor` checks local binaries and configuration without starting business providers or making TinyFish wallet/API calls; see [doctor](#doctor) for the exact output contract. Other Firecrawl versions are reported as uncertified; v0.1.0 is the integration-test baseline.
+
+## Initialization
+
+`freeweb-mcp init` is an interactive, terminal-only command that sets up the local baseline. It runs only when explicitly invoked — never from MCP startup or `doctor` — and there is no `--yes`, unattended, or JSON mode.
+
+1. **Plan and confirm.** It shows the planned provider and configuration actions and asks for confirmation before any side effect. Declining, or running without a terminal, stops before any write, installation, or provider launch and exits non-zero.
+2. **Existing Firecrawl is preserved.** An installed `firecrawl-local` is detected and never upgraded, downgraded, or reinstalled. Verification starts a FreeWeb-MCP-owned serve process on a loopback address, an owned port, with `FIRECRAWL_CLOUD=off`, requests only the local `/health` endpoint, and shuts the process down with the bounded shutdown discipline. Versions other than the certified 0.1.0 are left untouched and reported as an `Uncertified` warning; a failed health check is reported separately as `Failed`. A missing installation is reported as `Pending` with official manual guidance — automated installation arrives in a later release (#23).
+3. **Safe configuration.** New configuration uses conservative schema defaults — no private-network access, no Search Fallback, no Unrestricted Browse — and records the resolved absolute path of the detected Firecrawl binary so GUI clients do not depend on your terminal `PATH`. Existing valid configuration keeps every explicit value and receives only missing safe defaults; high-risk settings (private access, Search Fallback, unrestricted execution, the free-only attestation) are surfaced as warnings and never silently changed.
+4. **Repairs ask first.** A stale configured binary path produces an explicit old → new repair proposal and is changed only after its own confirmation.
+5. **Damaged configuration is never treated as absent.** Malformed or schema-invalid files require an explicit backup-and-rebuild confirmation before any installation or write; declining aborts with zero changes. The backup is non-overwriting (`config.backup.json`, then `config.backup.1.json`, …) and its path is reported without echoing damaged-file contents. Configuration writes are atomic — same-directory temporary file plus rename — with mode 0600 files and 0700 directories on POSIX; backups are also changed to 0600 where supported, so an interrupted run never leaves partially written JSON.
+6. **Doctor and summary.** A completed run executes the local doctor checks (the MCP server is never started), prints a summary using the `Installed / Configured / Skipped / Pending / Failed` outcome categories, and points at `freeweb-mcp print-config` for MCP client registration. `init` never reads or writes other MCP clients' configurations.
+
+Exit status: `0` only when Firecrawl and the base configuration are usable and no selected operation actually failed; `1` when a selected installation, write, or verification operation fails, or when Firecrawl or the base configuration remains `Pending` or `Failed`. Optional `Pending` or `Skipped` components never fail the run.
+
+Initialization is idempotent: rerun it after an interruption, after a failed run, or after installing a provider manually. This release covers users who already have Firecrawl Local installed; automated Firecrawl installation (#23) and optional TinyFish (#24) and ego-lite (#25) setup arrive in later releases.
 
 ## Configuration
 
