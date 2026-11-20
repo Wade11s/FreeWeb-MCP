@@ -75,6 +75,18 @@ describe("TinyFish Initialization", () => {
     expect(result.outcome).toBe("Pending");
     expect(result.detail).toContain("TINYFISH_API_KEY is not set");
     expect(result.detail).toContain("environment of the process that runs FreeWeb-MCP");
+    expect(result.configPatches).toBeUndefined();
+  });
+
+  it("treats a whitespace-only key as present like doctor and runtime", async () => {
+    const { detection, result } = await executeTinyFish(
+      { TINYFISH_API_KEY: "   " },
+      { status: "absent" },
+      [true, true],
+    );
+
+    expect(detection).toMatchObject({ tinyfishKeyPresent: true });
+    expect(result.outcome).toBe("Configured");
     expect(result.configPatches).toEqual([{ setting: "tinyfish.freeOnlyConfirmed", value: true }]);
   });
 

@@ -55,7 +55,7 @@ export function createTinyFishComponent(): InitComponent {
     // no provider binary to locate and no global TinyFish CLI involvement.
     installed: true,
     certified: true,
-    tinyfishKeyPresent: typeof env.TINYFISH_API_KEY === "string" && env.TINYFISH_API_KEY.trim().length > 0,
+    tinyfishKeyPresent: Boolean(env.TINYFISH_API_KEY),
     tinyfishAttested: effectiveAttestation(env, fileAttestation(classification)),
     notes: ["TinyFish uses the SDK already included with FreeWeb-MCP; no global CLI is needed"],
   });
@@ -104,10 +104,10 @@ export function createTinyFishComponent(): InitComponent {
         return pending(base, `${credential}; tinyfish.freeOnlyConfirmed was not enabled. ${NO_REQUESTS}`);
       }
 
-      const configPatches: readonly InitConfigPatch[] = [{ setting: "tinyfish.freeOnlyConfirmed", value: true }];
       if (!detection.tinyfishKeyPresent) {
-        return pending(base, `the explicit Free attestation was confirmed, but TINYFISH_API_KEY is not set. ${MANUAL_ENVIRONMENT_STEP} ${NO_REQUESTS}`, configPatches);
+        return pending(base, `the explicit Free attestation was confirmed, but TINYFISH_API_KEY is not set. ${MANUAL_ENVIRONMENT_STEP} ${NO_REQUESTS}`);
       }
+      const configPatches: readonly InitConfigPatch[] = [{ setting: "tinyfish.freeOnlyConfirmed", value: true }];
       if (!effectiveAttestation(input.env, true)) {
         return pending(base, "the explicit Free attestation was confirmed, but FREEWEB_TINYFISH_FREE_ONLY_CONFIRMED=false still overrides it; remove that override after verifying the attestation, then rerun init", configPatches);
       }

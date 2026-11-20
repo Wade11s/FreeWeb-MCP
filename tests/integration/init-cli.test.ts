@@ -288,21 +288,34 @@ describe.skipIf(!hasExpect)("built CLI interactive init behind a pseudo-terminal
     expect(raw.tinyfish.freeOnlyConfirmed).toBe(true);
   });
 
-  it("keeps TinyFish Pending until the manual environment step is completed", async () => {
+  it("keeps TinyFish Pending and unattested until the manual environment step is completed", async () => {
     await writeFakeFirecrawl();
     const first = await runCliInPty(["y", "y", "y"]);
     expect(first.status).toBe(0);
     expect(first.output).toContain("TinyFish Search/Fetch: Pending");
     expect(first.output).toContain("TINYFISH_API_KEY is not set");
     expect(first.output).toContain("environment of the process that runs FreeWeb-MCP");
-    const raw = JSON.parse(await readFile(configPath, "utf8")) as { tinyfish: { freeOnlyConfirmed?: boolean } };
-    expect(raw.tinyfish.freeOnlyConfirmed).toBe(true);
+    let raw = JSON.parse(await readFile(configPath, "utf8")) as { tinyfish: { freeOnlyConfirmed?: boolean } };
+    expect(raw.tinyfish.freeOnlyConfirmed).toBe(false);
 
     const secret = "integration-tinyfish-added-later";
-    const second = await runCliInPty(["y"], { TINYFISH_API_KEY: secret });
+    const second = await runCliInPty(["y", "y", "y"], { TINYFISH_API_KEY: secret });
     expect(second.status).toBe(0);
     expect(second.output).toContain("TinyFish Search/Fetch: Configured");
     expect(second.output).not.toContain(secret);
+    raw = JSON.parse(await readFile(configPath, "utf8")) as { tinyfish: { freeOnlyConfirmed?: boolean } };
+    expect(raw.tinyfish.freeOnlyConfirmed).toBe(true);
+  });
+
+  it("uses the same whitespace-only key presence as doctor and runtime", async () => {
+    await writeFakeFirecrawl();
+    const result = await runCliInPty(["y", "y", "y"], { TINYFISH_API_KEY: "   " });
+
+    expect(result.status).toBe(0);
+    expect(result.output).toContain("TinyFish Search/Fetch: Configured");
+    expect(result.output).toContain("PASS tinyfish: Enabled");
+    const raw = JSON.parse(await readFile(configPath, "utf8")) as { tinyfish: { freeOnlyConfirmed?: boolean } };
+    expect(raw.tinyfish.freeOnlyConfirmed).toBe(true);
   });
 
   it("allows optional TinyFish setup to be skipped without blocking the required baseline", async () => {
