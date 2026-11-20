@@ -376,7 +376,10 @@ export class ProviderRouter {
       const info = errorInfo(error, "firecrawl-local");
       throw new FreeWebError("ALL_PROVIDERS_FAILED", "Firecrawl Local Map failed", {
         cause: error,
-        details: { attempts: [{ provider: "firecrawl-local", outcome: "error", durationMs: Date.now() - started, code: info.code, message: info.message }] },
+        details: {
+          attempts: [{ provider: "firecrawl-local", outcome: "error", durationMs: Date.now() - started, code: info.code, message: info.message }],
+          cause: info.message,
+        },
       });
     }
   }

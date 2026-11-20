@@ -17,6 +17,9 @@ function systemAnswers(hostname) {
     case "private-trusted.fake-ip.test":
     case "unverified.fake-ip.test":
     case "empty-trusted.fake-ip.test":
+    case "application-failure.fake-ip.test":
+    case "empty-result.fake-ip.test":
+    case "missing-trusted.fake-ip.test":
       return [FAKE_V4, "198.19.255.255"];
     case "mixed.fake-ip.test":
       return [FAKE_V4, PUBLIC_V4];
@@ -50,6 +53,11 @@ dnsPromises.Resolver = class ControlledResolver {
       throw error;
     }
     if (hostname === "empty-trusted.fake-ip.test") return [];
+    if (hostname === "missing-trusted.fake-ip.test") {
+      const error = new Error(`Controlled trusted DNS has no answer for ${hostname}`);
+      error.code = "ENOTFOUND";
+      throw error;
+    }
     return [hostname === "private-trusted.fake-ip.test" ? "10.0.0.1" : PUBLIC_V4];
   }
 
@@ -61,6 +69,11 @@ dnsPromises.Resolver = class ControlledResolver {
       throw error;
     }
     if (hostname === "empty-trusted.fake-ip.test") return [];
+    if (hostname === "missing-trusted.fake-ip.test") {
+      const error = new Error(`Controlled trusted DNS has no answer for ${hostname}`);
+      error.code = "ENOTFOUND";
+      throw error;
+    }
     return [PUBLIC_V6];
   }
 };

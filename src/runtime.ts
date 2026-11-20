@@ -72,11 +72,11 @@ export class FreeWebRuntime implements FreeWebToolHandlers {
   async search(input: SearchInput) { return this.router.search(input); }
 
   /**
-   * The MCP-layer public-only target policy shared by Fetch and Crawl. Trusted DNS is the
-   * policy from #32: it is consulted only for an all-fake-ip system answer, every trusted
-   * answer must be public, and it never enables a private-access setting. Both callers pass
-   * the same configuration so a verified public target cannot work in one tool and fail in
-   * the other.
+   * The MCP-layer public-only target policy shared by Fetch, Map and Crawl. Trusted DNS is
+   * the policy from #32: it is consulted only for an all-fake-ip system answer, every
+   * trusted answer must be public, and it never enables a private-access setting. All callers
+   * pass the same configuration so a verified public target cannot work in one tool and fail
+   * in another.
    */
   private targetPolicy() {
     return {
@@ -91,7 +91,7 @@ export class FreeWebRuntime implements FreeWebToolHandlers {
   }
 
   async map(input: MapInput) {
-    await assertPublicHttpUrl(input.url, { allowPrivate: this.config.firecrawl.allowPrivate });
+    await assertPublicHttpUrl(input.url, this.targetPolicy());
     return this.router.map(input);
   }
 

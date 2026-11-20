@@ -619,6 +619,55 @@ describe("ProviderRouter Fetch seam", () => {
 });
 
 describe("ProviderRouter Map seam", () => {
+  it("keeps a confirmed empty Map response successful without Fallback", async () => {
+    let calls = 0;
+    const firecrawl: FetchMapAdapter = {
+      ...unusedFirecrawl({ fetchVerdict: SUPPORTED }),
+      async map() { calls++; return { links: [] }; },
+    };
+    router = makeRouter(firecrawl);
+
+    const result = await router.map(mapInputSchema.parse({ url: "https://example.com/empty" }));
+
+    expect(result.links).toEqual([]);
+    expect(result.partial).toBe(false);
+    expect(result.warnings).toEqual([]);
+    expect(result.attempts).toEqual([expect.objectContaining({ provider: "firecrawl-local", outcome: "success" })]);
+    expect(calls).toBe(1);
+  });
+
+  it("preserves an explicit Map Provider failure with an error attempt and cause", async () => {
+    const cause = new FreeWebError("MAP_APPLICATION_FAILED", "Controlled Map application failure", {
+      provider: "firecrawl-local",
+      details: { status: 200 },
+    });
+    const firecrawl: FetchMapAdapter = {
+      ...unusedFirecrawl({ fetchVerdict: SUPPORTED }),
+      async map() { throw cause; },
+    };
+    router = makeRouter(firecrawl);
+
+    const failure = await router.map(mapInputSchema.parse({ url: "https://example.com/failed" }))
+      .then(() => { throw new Error("Expected Map failure"); }, (error: unknown) => error);
+
+    expect(failure).toMatchObject({
+      code: "ALL_PROVIDERS_FAILED",
+      message: "Firecrawl Local Map failed",
+      cause,
+      options: {
+        details: {
+          cause: "Controlled Map application failure",
+          attempts: [expect.objectContaining({
+            provider: "firecrawl-local",
+            outcome: "error",
+            code: "MAP_APPLICATION_FAILED",
+            message: "Controlled Map application failure",
+          })],
+        },
+      },
+    });
+  });
+
   it("returns Map links and moves overflow into a complete Artifact", async () => {
     config.artifacts.inlineFetchTotalChars = 1000;
     const links = Array.from({ length: 100 }, (_, index) => ({ url: `https://example.com/${index}-${"p".repeat(30)}` }));

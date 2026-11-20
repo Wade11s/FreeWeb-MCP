@@ -66,6 +66,10 @@ async function callFetch(connected: Client, url: string, provider: "firecrawl-lo
   });
 }
 
+async function callMap(connected: Client, url: string) {
+  return connected.callTool({ name: "map", arguments: { url } });
+}
+
 async function callCrawl(connected: Client, url: string) {
   return connected.callTool({
     name: "crawl",
@@ -74,10 +78,14 @@ async function callCrawl(connected: Client, url: string) {
 }
 
 /** The structured tool failure is one JSON text block shaped as `{ error: { code, ... } }`. */
-function failureCode(result: Awaited<ReturnType<Client["callTool"]>>): string | undefined {
+function toolError(result: Awaited<ReturnType<Client["callTool"]>>): Record<string, any> {
   const block = result.content?.[0];
-  if (!block || block.type !== "text") return undefined;
-  return JSON.parse(block.text).error?.code;
+  if (!block || block.type !== "text") throw new Error("Expected a text error block");
+  return JSON.parse(block.text).error;
+}
+
+function failureCode(result: Awaited<ReturnType<Client["callTool"]>>): string | undefined {
+  return toolError(result).code;
 }
 
 /** Crawl Job checkpoints live under the configured data directory. */
@@ -170,6 +178,117 @@ describe("real stdio Fetch through controlled fake-ip DNS", () => {
     expect(JSON.stringify(result.content)).toContain("PRIVATE_URL_BLOCKED");
     expect(await firecrawlEvents()).toEqual([]);
     expect((await events()).filter((event) => event.kind === "tinyfish-fetch")).toEqual([]);
+  });
+});
+
+describe("real stdio Map through controlled fake-ip DNS", () => {
+  it("discovers controlled public URLs with private access disabled through trusted DNS", async () => {
+    const connected = await startClient();
+
+    const result = await callMap(connected, "https://public.fake-ip.test/map");
+
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      provider: "firecrawl-local",
+      links: [
+        { url: "https://public.fake-ip.test/a" },
+        { url: "https://public.fake-ip.test/b" },
+      ],
+      attempts: [expect.objectContaining({ provider: "firecrawl-local", outcome: "success" })],
+      warnings: [],
+      partial: false,
+    });
+
+    const dnsEvents = await events();
+    expect(dnsEvents.some((event) => event.kind === "system-lookup" && event.hostname === "public.fake-ip.test")).toBe(true);
+    expect(dnsEvents.some((event) => event.kind === "trusted-a")).toBe(true);
+    expect(dnsEvents.some((event) => event.kind === "trusted-aaaa")).toBe(true);
+
+    const providerEvents = await firecrawlEvents();
+    expect(providerEvents.filter((event) => event.kind === "local-map")).toEqual([
+      { kind: "local-map", url: "https://public.fake-ip.test/map" },
+    ]);
+    const starts = providerEvents.filter((event) => event.kind === "serve-start");
+    expect(starts).toHaveLength(1);
+    expect(starts[0]).toMatchObject({ cloud: "off", allowPrivate: "false" });
+    expect(starts[0]?.args).not.toContain("--allow-private");
+  });
+
+  it("fails a nonexistent public domain rejected by trusted DNS before Map Provider execution", async () => {
+    const connected = await startClient();
+
+    const result = await callMap(connected, "https://missing-trusted.fake-ip.test/");
+
+    expect(result.isError).toBe(true);
+    expect(failureCode(result)).toBe("FAKE_IP_DNS_UNVERIFIED");
+    expect((await events()).some((event) => event.kind === "trusted-a")).toBe(true);
+    expect(await firecrawlEvents()).toEqual([]);
+  });
+
+  it("turns an HTTP 200 application failure into the existing Map Provider failure with its cause", async () => {
+    const connected = await startClient();
+
+    const result = await callMap(connected, "https://application-failure.fake-ip.test/");
+
+    expect(result.isError).toBe(true);
+    expect(toolError(result)).toMatchObject({
+      code: "ALL_PROVIDERS_FAILED",
+      message: "Firecrawl Local Map failed",
+      cause: "Controlled Map application failure",
+      attempts: [expect.objectContaining({
+        provider: "firecrawl-local",
+        outcome: "error",
+        code: "MAP_APPLICATION_FAILED",
+        message: "Controlled Map application failure",
+      })],
+    });
+    expect((await firecrawlEvents()).filter((event) => event.kind === "local-map")).toHaveLength(1);
+  });
+
+  it("keeps a confirmed empty Map result successful without Fallback", async () => {
+    const connected = await startClient();
+
+    const result = await callMap(connected, "https://empty-result.fake-ip.test/");
+
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      provider: "firecrawl-local",
+      links: [],
+      attempts: [
+        expect.objectContaining({ provider: "firecrawl-local", outcome: "success" }),
+      ],
+      warnings: [],
+      partial: false,
+    });
+    expect((result.structuredContent as { attempts: unknown[] }).attempts).toHaveLength(1);
+    expect((await firecrawlEvents()).filter((event) => event.kind === "local-map")).toHaveLength(1);
+  });
+
+  it("reports fake-ip detection without trusted DNS before Map Provider execution", async () => {
+    const connected = await startClient({ trusted: false });
+
+    const result = await callMap(connected, "https://public.fake-ip.test/");
+
+    expect(result.isError).toBe(true);
+    expect(failureCode(result)).toBe("FAKE_IP_DNS_DETECTED");
+    expect((await events()).some((event) => event.kind.startsWith("trusted-"))).toBe(false);
+    expect(await firecrawlEvents()).toEqual([]);
+  });
+
+  it.each([
+    ["https://unverified.fake-ip.test/", "FAKE_IP_DNS_UNVERIFIED"],
+    ["https://private-trusted.fake-ip.test/", "PRIVATE_URL_BLOCKED"],
+    ["https://198.18.0.1/", "PRIVATE_URL_BLOCKED"],
+    ["http://127.0.0.1/", "PRIVATE_URL_BLOCKED"],
+    ["http://10.0.0.5/private", "PRIVATE_URL_BLOCKED"],
+  ])("blocks %s before Map Provider execution", async (url, code) => {
+    const connected = await startClient();
+
+    const result = await callMap(connected, url);
+
+    expect(result.isError).toBe(true);
+    expect(failureCode(result)).toBe(code);
+    expect(await firecrawlEvents()).toEqual([]);
   });
 });
 

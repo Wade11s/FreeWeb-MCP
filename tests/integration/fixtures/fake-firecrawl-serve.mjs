@@ -67,6 +67,27 @@ const server = createServer((request, response) => {
       }));
       return;
     }
+    if (request.url === "/v2/map" && request.method === "POST") {
+      const input = JSON.parse(body);
+      record({ kind: "local-map", url: input.url });
+      if (input.url.includes("application-failure")) {
+        response.end(JSON.stringify({
+          success: false,
+          code: "MAP_APPLICATION_FAILED",
+          error: "Controlled Map application failure",
+          links: [],
+        }));
+        return;
+      }
+      response.end(JSON.stringify({
+        success: true,
+        links: input.url.includes("empty-result") ? [] : [
+          { url: "https://public.fake-ip.test/a" },
+          { url: "https://public.fake-ip.test/b" },
+        ],
+      }));
+      return;
+    }
     if (request.url === "/v2/crawl" && request.method === "POST") {
       const input = JSON.parse(body);
       const id = String(input.url).includes("/slow") ? "controlled-slow-crawl" : "controlled-crawl";
