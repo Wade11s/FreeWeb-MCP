@@ -274,6 +274,20 @@ describe.skipIf(!hasExpect)("built CLI interactive init behind a pseudo-terminal
     await expectTreeToOmit(root, secret);
   });
 
+  it("keeps the exact attestation intact when the key is a substring of it", async () => {
+    await writeFakeFirecrawl();
+    const result = await runCliInPty(["y", "y", "y"], { TINYFISH_API_KEY: "wallet" });
+    const attestation = "This TinyFish API key belongs to an account with no wallet spending capability; free credits, a zero balance, disabled auto-reload, and installation success are not substitutes for this attestation.";
+
+    expect(result.status).toBe(0);
+    expect(result.output).toContain(`persist freeOnlyConfirmed only after confirming: "${attestation}"`);
+    expect(result.output).toContain(`Confirm the Free attestation: ${attestation} [y/N]`);
+    expect(result.output).not.toContain("no [redacted] spending capability");
+    expect(result.output).toContain("TinyFish Search/Fetch: Configured");
+    const raw = JSON.parse(await readFile(configPath, "utf8")) as { tinyfish: { freeOnlyConfirmed?: boolean } };
+    expect(raw.tinyfish.freeOnlyConfirmed).toBe(true);
+  });
+
   it("keeps TinyFish Pending until the manual environment step is completed", async () => {
     await writeFakeFirecrawl();
     const first = await runCliInPty(["y", "y", "y"]);

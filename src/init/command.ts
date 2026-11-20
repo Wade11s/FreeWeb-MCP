@@ -16,7 +16,7 @@ import {
 import { initRunSummary, type InitComponentId, type InitComponentResult, type InitWarning } from "./outcomes.js";
 import { buildInitPlan, type InitPlanItem } from "./plan.js";
 import type { InitIo } from "./prompt.js";
-import { redactInitIo } from "./redaction.js";
+import { redactTinyFishInitIo as redactInitIo } from "./components/tinyfish.js";
 import { containsEnvironmentCredential } from "./secrets.js";
 
 export interface InitDeps {
