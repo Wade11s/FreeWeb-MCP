@@ -24,25 +24,48 @@ export function redactInitText(
   // must remain verbatim even when a credential happens to be a substring.
   // Only those exact public phrases bypass redaction; all surrounding text
   // still crosses the central secret boundary.
-  let remaining = text;
+  //
+  // A phrase is only exempt where no credential straddles its edge: if a
+  // credential starts inside the phrase and continues past it (or starts
+  // before and ends inside), printing the phrase verbatim would split that
+  // credential into two pieces that no longer match. Such an occurrence is
+  // not exempt, and an empty phrase or a phrase that is itself a credential
+  // value is never exempt.
+  const secretsCrossing = (start: number, end: number): boolean =>
+    secrets.some((secret) => {
+      let index = text.indexOf(secret);
+      while (index >= 0) {
+        const secretEnd = index + secret.length;
+        const overlaps = index < end && secretEnd > start;
+        const contained = index >= start && secretEnd <= end;
+        if (overlaps && !contained) return true;
+        index = text.indexOf(secret, index + 1);
+      }
+      return false;
+    });
+  const exemptPhrases = publicPhrases.filter((phrase) => phrase.length > 0 && !secrets.includes(phrase));
+
+  let cursor = 0;
   let result = "";
-  while (remaining.length > 0) {
+  while (cursor < text.length) {
     let match: { readonly phrase: string; readonly index: number } | undefined;
-    for (const phrase of publicPhrases) {
-      if (!phrase) continue;
-      const index = remaining.indexOf(phrase);
+    for (const phrase of exemptPhrases) {
+      let index = text.indexOf(phrase, cursor);
+      while (index >= 0 && secretsCrossing(index, index + phrase.length)) {
+        index = text.indexOf(phrase, index + 1);
+      }
       if (index < 0) continue;
       if (!match || index < match.index || (index === match.index && phrase.length > match.phrase.length)) {
         match = { phrase, index };
       }
     }
     if (!match) {
-      result += redactSegment(remaining);
+      result += redactSegment(text.slice(cursor));
       break;
     }
-    result += redactSegment(remaining.slice(0, match.index));
+    result += redactSegment(text.slice(cursor, match.index));
     result += match.phrase;
-    remaining = remaining.slice(match.index + match.phrase.length);
+    cursor = match.index + match.phrase.length;
   }
   return result;
 }
