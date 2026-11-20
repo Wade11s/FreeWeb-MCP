@@ -33,7 +33,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "dev": "tsx src/cli.ts",
+    "dev": "tsx src/cli.ts mcp",
     "start": "node dist/cli.js mcp",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "pretest": "npm run build",
