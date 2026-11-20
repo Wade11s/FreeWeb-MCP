@@ -547,11 +547,16 @@ describe("init interruption and rerun recovery", () => {
     const code = await runInit(fake.io, deps({
       runDoctor: async () => ({
         ok: false,
-        checks: [{ name: "data-directory", ok: false, required: true, message: "simulated failure" }],
+        checks: [
+          { name: "data-directory", ok: false, required: true, version: dataDir, message: "simulated mkdir EACCES" },
+          { name: "data-directory", ok: true, required: true, version: dataDir },
+        ],
       }),
     }));
     expect(code).toBe(1);
-    expect(fake.out()).toContain("FAIL data-directory: simulated failure");
+    expect(fake.out()).toContain("FAIL data-directory: simulated mkdir EACCES");
+    expect(fake.out()).not.toContain(`FAIL data-directory: ${dataDir}`);
+    expect(fake.out()).toContain(`PASS data-directory: ${dataDir}`);
     expect(fake.out()).toContain("Initialization did not complete");
   });
 });

@@ -166,7 +166,7 @@ export async function runInit(io: InitIo, deps: InitDeps): Promise<number> {
     const report = await deps.runDoctor(config);
     if (!report.ok) doctorFailed = true;
     for (const check of report.checks) {
-      io.writeLine(`  ${doctorCheckState(check)} ${check.name}: ${check.version ?? check.message ?? ""}`);
+      io.writeLine(`  ${doctorCheckState(check)} ${check.name}: ${doctorCheckDetail(check)}`);
       if (check.warning) io.writeLine(`    warning: ${check.warning}`);
     }
   } catch (error) {
@@ -189,6 +189,13 @@ export async function runInit(io: InitIo, deps: InitDeps): Promise<number> {
     io.writeLine("  Initialization did not complete; rerun `freeweb-mcp init` after addressing the items above (it is safe to rerun).");
   }
   return doctorFailed ? 1 : summary.exitCode;
+}
+
+/** Passing checks report what was found; failing checks report the cause. */
+function doctorCheckDetail(check: DoctorCheck): string {
+  return check.ok
+    ? check.version ?? check.message ?? ""
+    : check.message ?? check.version ?? "";
 }
 
 /** Mirrors the doctor command's PASS/FAIL/WARN line states without nested ternaries. */
