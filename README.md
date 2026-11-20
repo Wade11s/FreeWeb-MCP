@@ -7,7 +7,7 @@ Free-first, local Web MCP built with **Firecrawl Local**, **TinyFish Search/Fetc
 - Firecrawl scrape/crawl/map runs locally with `FIRECRAWL_CLOUD=off`.
 - TinyFish is used only for Search/Fetch and only with an API key for an account that **cannot spend from a wallet**. A free tier, zero current balance, or disabled auto-reload alone is not the same guarantee.
 - TinyFish is disabled unless the key and explicit `freeOnlyConfirmed` attestation are both present.
-- Keyless Firecrawl Search fallback is optional and separately enabled.
+- Keyless Firecrawl Search is an optional Provider that must be separately enabled; whether a call may try it is controlled by the per-call `fallback` input.
 - TinyFish Agent/Browser/Research are not exposed. SDK retries are disabled so FreeWeb-MCP can control every request and fallback.
 
 See [Security model](docs/security.md) before enabling user Profiles or unrestricted execution.
@@ -164,8 +164,8 @@ Choose [1-3] (2):
 ```
 
 1. **One step and one decision at a time.** Each step shows only its current state, action, warnings, and numbered choices. Empty input selects the safe default (skip an optional component or quit a required action), `q` quits where available, and invalid choices are explained and asked again. Legacy `y`/`n` answers select the first/safe-default choice; on a failure menu, `y` selects Continue rather than retrying the failed side effect. There is no combined plan-confirmation gate.
-2. **Firecrawl is installed only when missing, and existing installations are preserved.** On macOS and Debian/Ubuntu, a missing `firecrawl-local` is installed from crates.io with the exact certified request `cargo install firecrawl-local --version 0.1.0`; the pin is `CERTIFIED_FIRECRAWL_VERSION` in `src/init/components/firecrawl.ts`. Before Cargo runs, `init` checks `rustc`, `cargo`, and `cc`; when one is absent it reports `Pending` with official rustup, Xcode command-line tools, or build-essential guidance and never installs those prerequisites. It never follows a source branch, runs `git clone`, selects another version, runs Firecrawl `login` or Firecrawl's own `init`, enables Search Fallback or private access, or registers an MCP client. Windows and other unsupported platforms receive detection and manual guidance without claiming a verified automatic installation. Existing installations of any version are never upgraded, downgraded, or reinstalled. Verification starts a FreeWeb-MCP-owned serve process on a loopback address, an owned port, with `FIRECRAWL_CLOUD=off`, requests only the local `/health` endpoint, and shuts the process down with the bounded shutdown discipline for both new and existing binaries. Versions other than the certified 0.1.0 are left untouched and reported as an `Uncertified` warning; a failed health check is reported separately as `Failed`. Chrome/Chromium is reported as an optional enhancement for JavaScript rendering and screenshots and is never a required readiness condition.
-3. **Safe configuration.** New configuration uses conservative schema defaults — no private-network access, no Search Fallback, no Unrestricted Browse — and records the resolved absolute path of the detected Firecrawl binary so GUI clients do not depend on your terminal `PATH`. Existing valid configuration keeps every explicit value and receives only missing safe defaults; high-risk settings (private access, Search Fallback, unrestricted execution, the free-only attestation) are surfaced as warnings and never silently changed.
+2. **Firecrawl is installed only when missing, and existing installations are preserved.** On macOS and Debian/Ubuntu, a missing `firecrawl-local` is installed from crates.io with the exact certified request `cargo install firecrawl-local --version 0.1.0`; the pin is `CERTIFIED_FIRECRAWL_VERSION` in `src/init/components/firecrawl.ts`. Before Cargo runs, `init` checks `rustc`, `cargo`, and `cc`; when one is absent it reports `Pending` with official rustup, Xcode command-line tools, or build-essential guidance and never installs those prerequisites. It never follows a source branch, runs `git clone`, selects another version, runs Firecrawl `login` or Firecrawl's own `init`, enables the keyless Firecrawl Search Provider or private access, or registers an MCP client. Windows and other unsupported platforms receive detection and manual guidance without claiming a verified automatic installation. Existing installations of any version are never upgraded, downgraded, or reinstalled. Verification starts a FreeWeb-MCP-owned serve process on a loopback address, an owned port, with `FIRECRAWL_CLOUD=off`, requests only the local `/health` endpoint, and shuts the process down with the bounded shutdown discipline for both new and existing binaries. Versions other than the certified 0.1.0 are left untouched and reported as an `Uncertified` warning; a failed health check is reported separately as `Failed`. Chrome/Chromium is reported as an optional enhancement for JavaScript rendering and screenshots and is never a required readiness condition.
+3. **Safe configuration.** New configuration uses conservative schema defaults — no private-network access, no keyless Firecrawl Search Provider, no Unrestricted Browse — and records the resolved absolute path of the detected Firecrawl binary so GUI clients do not depend on your terminal `PATH`. Existing valid configuration keeps every explicit value and receives only missing safe defaults; high-risk settings (private access, the keyless Firecrawl Search Provider, unrestricted execution, the free-only attestation) are surfaced as warnings and never silently changed.
 4. **Repairs ask first.** A stale configured binary path produces an explicit old → new repair proposal and is changed only after its own confirmation.
 5. **Damaged configuration is never treated as absent.** Malformed or schema-invalid files require an explicit backup-and-rebuild confirmation before any installation or write; declining aborts with zero changes. The backup is non-overwriting (`config.backup.json`, then `config.backup.1.json`, …) and its path is reported without echoing damaged-file contents. Configuration writes are atomic — same-directory temporary file plus rename — with mode 0600 files and 0700 directories on POSIX; backups are also changed to 0600 where supported, so an interrupted run never leaves partially written JSON.
 6. **Configuration, Doctor, and summary are separate steps.** Configuration is written only after its own selection, and Doctor runs only after another explicit selection. A failed step offers `Retry / Continue / Quit` without automatic retries. Quit stops all later steps and any pending configuration write; already completed installations, backups, writes, or browser launches are not rolled back and are listed in the partial summary. A completed run classifies results as `Installed / Configured / Skipped / Pending / Failed`, points at `freeweb-mcp print-config`, and never starts the MCP server or modifies another MCP client's configuration.
@@ -188,7 +188,7 @@ Before Initialization can persist `tinyfish.freeOnlyConfirmed: true`, it shows a
 
 > This TinyFish API key belongs to an account with no wallet spending capability; free credits, a zero balance, disabled auto-reload, and installation success are not substitutes for this attestation.
 
-Only the boolean attestation is contributed to configuration, after that explicit confirmation. A missing key or missing attestation leaves TinyFish `Pending`, not `Configured`; skipping the optional component reports `Skipped`. TinyFish Initialization does not enable Firecrawl Search Fallback.
+Only the boolean attestation is contributed to configuration, after that explicit confirmation. A missing key or missing attestation leaves TinyFish `Pending`, not `Configured`; skipping the optional component reports `Skipped`. TinyFish Initialization does not enable the keyless Firecrawl Search Provider.
 
 Initialization makes no TinyFish wallet, business Search/Fetch, SDK, or other paid-risk verification request. Consequently, `Configured` means only that the environment credential is present and the explicit attestation is effective. Successful Initialization and doctor's TinyFish check do not prove that the key works, that the account has quota, or that TinyFish Search/Fetch is ready.
 
@@ -252,7 +252,7 @@ Useful environment overrides:
 | `FREEWEB_TINYFISH_FREE_ONLY_CONFIRMED` | `true` only after the no-wallet-spending check |
 | `FIRECRAWL_LOCAL_BIN` | Firecrawl binary path |
 | `FIRECRAWL_PORT` | Fixed port; `0` selects an owned free port |
-| `FREEWEB_FIRECRAWL_SEARCH_FALLBACK` | Enable keyless Firecrawl Search fallback |
+| `FREEWEB_FIRECRAWL_SEARCH_FALLBACK` | Enable the keyless Firecrawl Search Provider (separate from the per-call Search `fallback` input) |
 | `EGO_BROWSER_BIN` | ego-browser binary path |
 | `FREEWEB_EGO_UNRESTRICTED` | Register the unrestricted `browse_node` tool |
 
@@ -261,6 +261,17 @@ Firecrawl and ego private-network access have separate opt-in settings. Do not e
 `network.trustedDnsServers` defaults to `[]` and accepts only public IP literals, not resolver hostnames or URLs. For a non-IP Fetch hostname, trusted DNS is consulted only when every system answer is in `198.18.0.0/15`. Ordinary and mixed answers never contact it. An all-fake-ip answer without configuration returns `FAKE_IP_DNS_DETECTED`; trusted resolution failure or no answers returns retryable `FAKE_IP_DNS_UNVERIFIED`. Every trusted answer must be public. Direct fake-ip literals, private trusted answers, local/private targets, credentialed URLs, and non-HTTP(S) URLs remain blocked, and validation failures never trigger Provider Fallback.
 
 Local Fetch and TinyFish Fetch both use this policy while retaining their own public-only checks; TinyFish revalidates at its Provider boundary. Configuring trusted DNS does not enable either `allowPrivate` setting. Configuration is startup-loaded: after changing `network.trustedDnsServers` or `FREEWEB_TRUSTED_DNS_SERVERS`, restart the MCP server or reload the MCP session.
+
+### Search providers and per-call Fallback
+
+Search has two independent settings that are easy to confuse:
+
+- **Provider configuration** decides which Providers exist. `TINYFISH_API_KEY` plus `tinyfish.freeOnlyConfirmed: true` enables TinyFish Search; `firecrawl.searchFallback: true` enables the keyless Firecrawl Search Provider. A Provider that is not configured is *disabled*; that is a configuration state, not Fallback.
+- **The per-call `fallback` input** (default `true`) decides whether one Search call may try one alternate Provider. `fallback: false` means no alternate Provider is inspected, requested, or charged against its quota.
+
+The two settings compose: with `fallback: false`, a failing or unconfigured requested Provider returns an error that names the relevant configuration and states that no alternate was attempted. With `fallback: true`, an explicit unconfigured primary may be skipped and at most one configured alternate is attempted. A successful degraded result reports `requestedProvider`, the actual `provider`, every `attempts` entry, and an explicit warning. A valid empty Search result is a success and never triggers Fallback.
+
+A disabled Provider is not the same as disabling per-call Fallback, and `fallback: false` does not disable TinyFish or keyless Firecrawl Search configuration.
 
 ## MCP client
 
@@ -287,7 +298,7 @@ Restart the MCP client after changing tool-registration settings such as `ego.un
 
 | Tool | Purpose |
 | --- | --- |
-| `search` | TinyFish Search, with one optional keyless Firecrawl Search fallback |
+| `search` | Requested Provider first; per-call `fallback` allows at most one alternate; keyless Firecrawl Search must be enabled separately |
 | `fetch` | Fetch 1–10 URLs; Firecrawl Local first, TinyFish only for compatible failed URLs |
 | `map` | Synchronously discover URLs through Firecrawl Local |
 | `crawl` | Start a bounded, robots-respecting asynchronous Crawl Job |
@@ -310,6 +321,18 @@ Search:
 }
 ```
 
+Search pinned to one Provider without any alternate attempt:
+
+```json
+{
+  "query": "local web MCP",
+  "provider": "tinyfish",
+  "fallback": false
+}
+```
+
+`provider` selects the requested Provider (`auto` starts with TinyFish). `fallback: false` forbids alternate Provider attempts even when keyless Firecrawl Search is configured.
+
 Fetch:
 
 ```json
@@ -325,9 +348,12 @@ Start and read a Crawl Job:
 {
   "url": "https://example.com/docs",
   "limit": 20,
-  "maxDiscoveryDepth": 3
+  "maxDiscoveryDepth": 3,
+  "formats": ["markdown", "links"]
 }
 ```
+
+Crawl Pages are unique and stably ordered across snapshots and checkpoints. When the Job requests `links`, each Page carries the same optional top-level `links` array as a Fetch Page, and `formats.links` is retained for existing consumers.
 
 ```json
 {

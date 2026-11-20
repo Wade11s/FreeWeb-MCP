@@ -27,7 +27,7 @@ export function createMcpServer(runtime: FreeWebToolHandlers, version: string): 
 
   server.registerTool("search", {
     title: "Search the Web",
-    description: "Search with TinyFish, optionally falling back once to keyless Firecrawl Search. TinyFish requires a free-only confirmed API key.",
+    description: "Search the web. The requested Provider is tried first; the per-call fallback switch (default true) allows at most one alternate Provider attempt, while firecrawl.searchFallback only decides whether keyless Firecrawl Search exists. A disabled Provider is a configuration state, not the per-call fallback switch. TinyFish requires a free-only confirmed API key.",
     inputSchema: searchInputSchema,
     outputSchema: searchOutputSchema,
     annotations: { readOnlyHint: true, openWorldHint: true },

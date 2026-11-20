@@ -5,10 +5,31 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ArtifactStore } from "../../src/artifacts/artifact-store.js";
+import { ArtifactOutput } from "../../src/artifacts/output.js";
+import { loadConfig } from "../../src/config.js";
+import { CrawlManager } from "../../src/crawl/crawl-manager.js";
+import type { CrawlJobAdapter, CrawlJobSnapshot } from "../../src/crawl/crawl-job-adapter.js";
 import { FreeWebError } from "../../src/errors.js";
 import { createMcpServer } from "../../src/mcp/server.js";
 import type { FreeWebToolHandlers } from "../../src/mcp/runtime-interface.js";
-import type { BrowseInput, SearchInput } from "../../src/types.js";
+import {
+  SUPPORTED,
+  type FetchMapAdapter,
+  type FetchProvider,
+  type ProviderPreflight,
+  type SearchProvider,
+} from "../../src/providers/interfaces.js";
+import { ProviderRouter } from "../../src/providers/router.js";
+import type { BrowseInput, CrawlInput, CrawlStatusInput, SearchInput } from "../../src/types.js";
+
+class FakeCrawlAdapter implements CrawlJobAdapter {
+  snapshot: CrawlJobSnapshot = { status: "scraping", total: 0, completed: 0, pages: [], errors: [] };
+  starts = 0;
+
+  async startCrawl(_input: CrawlInput) { this.starts++; return { id: "provider-job-1" }; }
+  async getCrawl(_providerJobId: string) { return this.snapshot; }
+  async cancelCrawl(_providerJobId: string) { this.snapshot = { ...this.snapshot, status: "cancelled" }; }
+}
 
 /** Deliberately not the current release: the MCP handshake must echo what it is given. */
 const ordinaryVersion = "1.2.3";
@@ -32,9 +53,9 @@ class FakeRuntime implements FreeWebToolHandlers {
   }
   async fetch(): Promise<any> { throw new FreeWebError("FETCH_DOWN", "fetch unavailable"); }
   async map(): Promise<any> { throw new Error("not used"); }
-  async crawl(): Promise<any> { throw new Error("not used"); }
-  async crawlStatus(): Promise<any> { throw new Error("not used"); }
-  async crawlCancel(): Promise<any> { throw new Error("not used"); }
+  async crawl(_input: CrawlInput): Promise<any> { throw new Error("not used"); }
+  async crawlStatus(_input: CrawlStatusInput): Promise<any> { throw new Error("not used"); }
+  async crawlCancel(_input: { crawlId: string }): Promise<any> { throw new Error("not used"); }
   async managedBrowseToolCall(_input: BrowseInput): Promise<CallToolResult> { throw new Error("not used"); }
   async browseEvaluate(): Promise<any> { throw new Error("not used"); }
   async browseNode() {
@@ -179,6 +200,271 @@ describe("MCP public protocol seam", () => {
     });
   });
 
+  describe("Search Fallback contract through the MCP public protocol", () => {
+    class ControlledTinyFish implements SearchProvider, FetchProvider {
+      readonly name = "tinyfish" as const;
+      searchInspections = 0;
+      searchCalls = 0;
+      searchError: unknown;
+      empty = false;
+
+      inspectSearch(): ProviderPreflight {
+        this.searchInspections++;
+        return SUPPORTED;
+      }
+
+      inspectFetch(): ProviderPreflight {
+        return SUPPORTED;
+      }
+
+      async search() {
+        this.searchCalls++;
+        if (this.searchError) throw this.searchError;
+        return {
+          results: this.empty
+            ? []
+            : [{ position: 1, title: "TinyFish Result", url: "https://example.com/tinyfish", snippet: "primary" }],
+        };
+      }
+
+      async fetch(): Promise<never> {
+        throw new Error("Fetch is not part of this Search contract");
+      }
+    }
+
+    class ControlledFirecrawlSearch implements SearchProvider {
+      readonly name = "firecrawl-search" as const;
+      inspections = 0;
+      calls = 0;
+      searchError: unknown;
+
+      inspectSearch(): ProviderPreflight {
+        this.inspections++;
+        return SUPPORTED;
+      }
+
+      async search() {
+        this.calls++;
+        if (this.searchError) throw this.searchError;
+        return {
+          results: [{ position: 1, title: "Firecrawl Result", url: "https://example.com/firecrawl", snippet: "fallback" }],
+        };
+      }
+    }
+
+    const unusedFirecrawl: FetchMapAdapter = {
+      name: "firecrawl-local",
+      inspectFetch: () => SUPPORTED,
+      fetch: async (): Promise<never> => { throw new Error("Fetch is not part of this Search contract"); },
+      map: async (): Promise<never> => { throw new Error("Map is not part of this Search contract"); },
+    };
+
+    class RouterBackedRuntime implements FreeWebToolHandlers {
+      unrestricted = false;
+
+      constructor(readonly artifacts: ArtifactStore, private readonly router: ProviderRouter) {}
+
+      async search(input: SearchInput) { return this.router.search(input); }
+      async fetch(): Promise<never> { throw new Error("not used"); }
+      async map(): Promise<never> { throw new Error("not used"); }
+      async crawl(): Promise<never> { throw new Error("not used"); }
+      async crawlStatus(): Promise<never> { throw new Error("not used"); }
+      async crawlCancel(): Promise<never> { throw new Error("not used"); }
+      async managedBrowseToolCall(): Promise<never> { throw new Error("not used"); }
+      async browseEvaluate(): Promise<never> { throw new Error("not used"); }
+      async browseNode(): Promise<never> { throw new Error("not used"); }
+    }
+
+    async function connectSearchContract(options: {
+      tinyfish?: ControlledTinyFish;
+      firecrawlSearch?: ControlledFirecrawlSearch;
+      tinyfishSearchPerMinute?: number;
+    } = {}) {
+      await client.close();
+      await server.close();
+      const config = await loadConfig({ configPath: join(root, "missing.json"), env: {} });
+      if (options.tinyfishSearchPerMinute !== undefined) config.limits.tinyfishSearchPerMinute = options.tinyfishSearchPerMinute;
+      const artifacts = new ArtifactStore({ root });
+      const router = new ProviderRouter({
+        config,
+        output: new ArtifactOutput(artifacts),
+        ...(options.tinyfish ? { tinyfish: options.tinyfish } : {}),
+        firecrawl: unusedFirecrawl,
+        ...(options.firecrawlSearch ? { firecrawlSearch: options.firecrawlSearch } : {}),
+        cloudUrlValidator: async (url) => new URL(url),
+      });
+      server = createMcpServer(new RouterBackedRuntime(artifacts, router), ordinaryVersion);
+      client = new Client({ name: "freeweb-search-contract-client", version: "1.0.0" });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+    }
+
+    function toolError(result: CallToolResult) {
+      const block = result.content[0];
+      if (!block || block.type !== "text") throw new Error("Expected a text error block");
+      const parsed = JSON.parse(String(block.text)) as {
+        error: { code: string; message: string; attempts?: Array<Record<string, unknown>> };
+      };
+      return parsed.error;
+    }
+
+    it("does not inspect or request the alternate after a primary failure when fallback is false", async () => {
+      const tinyfish = new ControlledTinyFish();
+      tinyfish.searchError = new FreeWebError("RATE_LIMIT_EXCEEDED", "quota exhausted", { provider: "tinyfish", retryable: true });
+      const firecrawlSearch = new ControlledFirecrawlSearch();
+      await connectSearchContract({ tinyfish, firecrawlSearch });
+
+      const result = await client.callTool({ name: "search", arguments: { query: "no fallback", fallback: false } });
+
+      expect(result.isError).toBe(true);
+      const error = toolError(result);
+      expect(error.code).toBe("ALL_PROVIDERS_FAILED");
+      expect(error.message).toContain("fallback: false");
+      expect(error.attempts).toEqual([expect.objectContaining({ provider: "tinyfish", outcome: "error", code: "RATE_LIMIT_EXCEEDED" })]);
+      expect(firecrawlSearch.inspections).toBe(0);
+      expect(firecrawlSearch.calls).toBe(0);
+    });
+
+    it("does not consume alternate quota after a primary failure when fallback is false", async () => {
+      const tinyfish = new ControlledTinyFish();
+      const firecrawlSearch = new ControlledFirecrawlSearch();
+      firecrawlSearch.searchError = new FreeWebError("UPSTREAM_ERROR", "keyless search failed", { provider: "firecrawl-search" });
+      await connectSearchContract({ tinyfish, firecrawlSearch, tinyfishSearchPerMinute: 1 });
+
+      const failed = await client.callTool({
+        name: "search",
+        arguments: { query: "firecrawl first", provider: "firecrawl-search", fallback: false },
+      });
+      expect(failed.isError).toBe(true);
+      expect(tinyfish.searchInspections).toBe(0);
+      expect(tinyfish.searchCalls).toBe(0);
+
+      const after = await client.callTool({
+        name: "search",
+        arguments: { query: "tinyfish still has quota", provider: "tinyfish", fallback: false },
+      });
+      expect(after.isError).not.toBe(true);
+      expect(after.structuredContent).toMatchObject({ provider: "tinyfish", requestedProvider: "tinyfish" });
+      expect(tinyfish.searchCalls).toBe(1);
+    });
+
+    it("reports an unconfigured explicit primary without inspecting the configured alternate when fallback is false", async () => {
+      const firecrawlSearch = new ControlledFirecrawlSearch();
+      await connectSearchContract({ firecrawlSearch });
+
+      const result = await client.callTool({
+        name: "search",
+        arguments: { query: "unconfigured primary", provider: "tinyfish", fallback: false },
+      });
+
+      expect(result.isError).toBe(true);
+      const error = toolError(result);
+      expect(error.code).toBe("PROVIDER_NOT_CONFIGURED");
+      expect(error.message).toContain("TINYFISH_API_KEY");
+      expect(error.message).toContain("fallback: false");
+      expect(error.message).toContain("no alternate Provider was inspected or attempted");
+      expect(error.attempts).toEqual([expect.objectContaining({ provider: "tinyfish", outcome: "skipped", code: "PROVIDER_NOT_CONFIGURED" })]);
+      expect(firecrawlSearch.inspections).toBe(0);
+      expect(firecrawlSearch.calls).toBe(0);
+    });
+
+    it("skips an unconfigured explicit primary and attempts exactly one configured alternate when fallback is enabled", async () => {
+      const firecrawlSearch = new ControlledFirecrawlSearch();
+      await connectSearchContract({ firecrawlSearch });
+
+      const result = await client.callTool({
+        name: "search",
+        arguments: { query: "configured alternate", provider: "tinyfish" },
+      });
+
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        provider: "firecrawl-search",
+        requestedProvider: "tinyfish",
+        attempts: [
+          expect.objectContaining({ provider: "tinyfish", outcome: "skipped", code: "PROVIDER_NOT_CONFIGURED" }),
+          expect.objectContaining({ provider: "firecrawl-search", outcome: "success" }),
+        ],
+        warnings: [expect.stringContaining("fallback")],
+      });
+      expect((result.structuredContent as { attempts: unknown[] }).attempts).toHaveLength(2);
+      expect(firecrawlSearch.calls).toBe(1);
+    });
+
+    it("attributes a successful fallback to requested and actual Providers with attempts and a warning", async () => {
+      const tinyfish = new ControlledTinyFish();
+      tinyfish.searchError = new FreeWebError("RATE_LIMIT_EXCEEDED", "quota exhausted", { provider: "tinyfish", retryable: true });
+      const firecrawlSearch = new ControlledFirecrawlSearch();
+      await connectSearchContract({ tinyfish, firecrawlSearch });
+
+      const result = await client.callTool({
+        name: "search",
+        arguments: { query: "visible fallback", provider: "tinyfish" },
+      });
+
+      expect(result.isError).not.toBe(true);
+      const output = result.structuredContent as {
+        provider: string;
+        requestedProvider: string;
+        attempts: Array<{ provider: string; outcome: string; code?: string }>;
+        warnings: string[];
+        results: Array<{ title: string }>;
+      };
+      expect(output.provider).toBe("firecrawl-search");
+      expect(output.requestedProvider).toBe("tinyfish");
+      expect(output.attempts.map((attempt) => [attempt.provider, attempt.outcome, attempt.code])).toEqual([
+        ["tinyfish", "error", "RATE_LIMIT_EXCEEDED"],
+        ["firecrawl-search", "success", undefined],
+      ]);
+      expect(output.warnings).toHaveLength(1);
+      expect(output.warnings[0]).toContain("fallback");
+      expect(output.warnings[0]).toContain("firecrawl-search");
+      expect(output.results[0].title).toBe("Firecrawl Result");
+      expect(tinyfish.searchCalls).toBe(1);
+      expect(firecrawlSearch.calls).toBe(1);
+    });
+
+    it("keeps a valid empty Search result successful without any fallback attempt", async () => {
+      const tinyfish = new ControlledTinyFish();
+      tinyfish.empty = true;
+      const firecrawlSearch = new ControlledFirecrawlSearch();
+      await connectSearchContract({ tinyfish, firecrawlSearch });
+
+      const result = await client.callTool({ name: "search", arguments: { query: "valid empty" } });
+
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        provider: "tinyfish",
+        results: [],
+        warnings: [],
+        attempts: [expect.objectContaining({ provider: "tinyfish", outcome: "success" })],
+      });
+      expect(firecrawlSearch.inspections).toBe(0);
+      expect(firecrawlSearch.calls).toBe(0);
+    });
+
+    it("distinguishes a disabled keyless Search Provider from a disabled per-call fallback", async () => {
+      const tinyfish = new ControlledTinyFish();
+      tinyfish.searchError = new FreeWebError("RATE_LIMIT_EXCEEDED", "quota exhausted", { provider: "tinyfish", retryable: true });
+      await connectSearchContract({ tinyfish });
+
+      const result = await client.callTool({ name: "search", arguments: { query: "keyless disabled" } });
+
+      expect(result.isError).toBe(true);
+      const error = toolError(result);
+      expect(error.code).toBe("ALL_PROVIDERS_FAILED");
+      expect(error.message).toContain("Keyless Firecrawl Search is not configured");
+      expect(error.message).toContain("firecrawl.searchFallback");
+      expect(error.message).toContain("Per-call fallback is enabled");
+      expect(error.attempts).toEqual([
+        expect.objectContaining({ provider: "tinyfish", outcome: "error", code: "RATE_LIMIT_EXCEEDED" }),
+        expect.objectContaining({ provider: "firecrawl-search", outcome: "skipped", code: "PROVIDER_NOT_CONFIGURED" }),
+      ]);
+      expect(tinyfish.searchCalls).toBe(1);
+    });
+  });
+
   it("lists and reads saved Artifacts as MCP Resources", async () => {
     const saved = await runtime.artifacts.save({ data: JSON.stringify({ complete: true }), mimeType: "application/json" });
 
@@ -186,5 +472,104 @@ describe("MCP public protocol seam", () => {
     expect(listed.resources.some((resource) => resource.uri === saved.uri)).toBe(true);
     const read = await client.readResource({ uri: saved.uri });
     expect(read.contents[0]).toMatchObject({ uri: saved.uri, text: JSON.stringify({ complete: true }) });
+  });
+
+  it("returns unique Crawl Pages with truthful pagination and links over MCP", async () => {
+    const adapter = new FakeCrawlAdapter();
+    const manager = new CrawlManager({
+      adapter,
+      root,
+      output: new ArtifactOutput(runtime.artifacts),
+      pollIntervalMs: 0,
+    });
+    await manager.recover();
+    runtime.crawl = (input) => manager.start(input);
+    runtime.crawlStatus = (input) => manager.status(input);
+    runtime.crawlCancel = (input) => manager.cancel(input);
+
+    try {
+      const started = await client.callTool({
+        name: "crawl",
+        arguments: { url: "https://example.com", limit: 5, formats: ["markdown", "links"] },
+      });
+      expect(started.isError).not.toBe(true);
+      const crawlId = (started.structuredContent as { crawlId: string }).crawlId;
+      expect(crawlId).toBeDefined();
+
+      adapter.snapshot = {
+        status: "completed",
+        total: 6,
+        completed: 6,
+        pages: [
+          { url: "https://example.com/a", formats: { markdown: "A", links: ["https://example.com/a/1"] } },
+          { url: "https://example.com/a#part", formats: { markdown: "A again", links: ["https://example.com/a/2"] } },
+          { url: "https://example.com/b?tab=1", formats: { markdown: "B one", links: [] } },
+          { url: "https://example.com/b?tab=2", formats: { markdown: "B two", links: [] } },
+          { url: "https://example.com/dir/", formats: { markdown: "dir", links: [] } },
+          { url: "https://example.com/dir", formats: { markdown: "dir no slash", links: [] } },
+        ],
+        errors: [],
+      };
+
+      const first = await client.callTool({
+        name: "crawl_status",
+        arguments: { crawlId, offset: 0, limit: 3 },
+      });
+      expect(first.isError).not.toBe(true);
+      const firstOutput = first.structuredContent as {
+        total: number;
+        completed: number;
+        returned: number;
+        hasMore: boolean;
+        artifactId: string;
+        pages: Array<{ url: string; links?: string[]; formats: Record<string, unknown> }>;
+      };
+      expect(firstOutput.total).toBe(5);
+      expect(firstOutput.completed).toBe(5);
+      expect(firstOutput.returned).toBe(3);
+      expect(firstOutput.hasMore).toBe(true);
+      expect(firstOutput.pages.map((page) => page.url)).toEqual([
+        "https://example.com/a",
+        "https://example.com/b?tab=1",
+        "https://example.com/b?tab=2",
+      ]);
+      expect(firstOutput.pages[0].links).toEqual(["https://example.com/a/2"]);
+      expect(firstOutput.pages[0].formats.links).toEqual(["https://example.com/a/2"]);
+
+      const second = await client.callTool({
+        name: "crawl_status",
+        arguments: { crawlId, offset: 3, limit: 3 },
+      });
+      expect(second.isError).not.toBe(true);
+      const secondOutput = second.structuredContent as typeof firstOutput;
+      expect(secondOutput.returned).toBe(2);
+      expect(secondOutput.hasMore).toBe(false);
+      expect(secondOutput.pages.map((page) => page.url)).toEqual([
+        "https://example.com/dir/",
+        "https://example.com/dir",
+      ]);
+      const exposed = [...firstOutput.pages, ...secondOutput.pages].map((page) => page.url);
+      expect(new Set(exposed).size).toBe(exposed.length);
+
+      const read = await client.readResource({ uri: `freeweb://artifacts/${firstOutput.artifactId}` });
+      const checkpoint = JSON.parse((read.contents[0] as { text: string }).text) as {
+        total: number;
+        completed: number;
+        pages: Array<{ url: string; links?: string[]; formats: Record<string, unknown> }>;
+      };
+      expect(checkpoint.total).toBe(5);
+      expect(checkpoint.completed).toBe(5);
+      expect(checkpoint.pages.map((page) => page.url)).toEqual([
+        "https://example.com/a",
+        "https://example.com/b?tab=1",
+        "https://example.com/b?tab=2",
+        "https://example.com/dir/",
+        "https://example.com/dir",
+      ]);
+      expect(checkpoint.pages.every((page) => page.links === undefined)).toBe(true);
+      expect(adapter.starts).toBe(1);
+    } finally {
+      await manager.close();
+    }
   });
 });
