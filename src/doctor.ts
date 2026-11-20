@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
+import { formatVersion, isAtLeast, type Version } from "./package-metadata.js";
 import { childProcessEnv } from "./providers/firecrawl-process.js";
 
 const execFileAsync = promisify(execFile);
@@ -15,6 +16,26 @@ export interface DoctorCheck {
   warning?: string;
 }
 
+export interface DoctorReport {
+  /** True when every required check passed; optional failures never fail the report. */
+  ok: boolean;
+  checks: DoctorCheck[];
+}
+
+/**
+ * Inputs doctor receives from its host instead of reading from the process.
+ * The runtime floor comes from package.json, so doctor enforces exactly the
+ * version the package declares rather than a second hard-coded copy.
+ */
+export interface DoctorEnvironment {
+  /** Minimum Node.js version the package declares in `engines.node`, parsed to major/minor/patch. */
+  readonly minimumNodeVersion: Version;
+  /** Running Node.js version; defaults to `process.versions.node`. */
+  readonly nodeVersion?: string;
+  /** Host platform; defaults to `process.platform`. */
+  readonly platform?: NodeJS.Platform;
+}
+
 async function versionCheck(name: string, binary: string, required: boolean): Promise<DoctorCheck> {
   try {
     const { stdout, stderr } = await execFileAsync(binary, ["--version"], { timeout: 5000, windowsHide: true, env: childProcessEnv({}) });
@@ -25,14 +46,21 @@ async function versionCheck(name: string, binary: string, required: boolean): Pr
   }
 }
 
-export async function runDoctor(config: AppConfig): Promise<{ ok: boolean; checks: DoctorCheck[] }> {
-  const nodeMajor = Number(process.versions.node.split(".")[0]);
+/**
+ * Checks local readiness without starting business providers: version checks
+ * spawn provider binaries with `--version` only, and TinyFish readiness is
+ * read from configuration, so no wallet or API request is ever made.
+ */
+export async function runDoctor(config: AppConfig, environment: DoctorEnvironment): Promise<DoctorReport> {
+  const nodeVersion = environment.nodeVersion ?? process.versions.node;
+  const platform = environment.platform ?? process.platform;
+  const nodeOk = isAtLeast(nodeVersion, environment.minimumNodeVersion);
   const checks: DoctorCheck[] = [{
     name: "node",
-    ok: nodeMajor >= 22,
+    ok: nodeOk,
     required: true,
-    version: process.version,
-    ...(nodeMajor >= 22 ? {} : { message: "Node.js 22 or newer is required" }),
+    version: nodeVersion.startsWith("v") ? nodeVersion : `v${nodeVersion}`,
+    ...(nodeOk ? {} : { message: `Node.js ${formatVersion(environment.minimumNodeVersion)} or newer is required` }),
   }];
   const firecrawl = await versionCheck("firecrawl-local", config.firecrawl.binary, true);
   if (firecrawl.ok && firecrawl.version && !firecrawl.version.includes("0.1.0")) {
@@ -52,16 +80,16 @@ export async function runDoctor(config: AppConfig): Promise<{ ok: boolean; check
   });
   checks.push({
     name: "ego-platform",
-    ok: process.platform !== "linux",
+    ok: platform !== "linux",
     required: false,
-    version: process.platform,
-    ...(process.platform === "linux" ? { message: "Managed Browse is supported only on macOS and Windows" } : {}),
+    version: platform,
+    ...(platform === "linux" ? { message: "Managed Browse is supported only on macOS and Windows" } : {}),
   });
   try {
-    await mkdir(config.dataDir!, { recursive: true, mode: 0o700 });
-    checks.push({ name: "data-directory", ok: true, required: true, version: config.dataDir! });
+    await mkdir(config.dataDir, { recursive: true, mode: 0o700 });
+    checks.push({ name: "data-directory", ok: true, required: true, version: config.dataDir });
   } catch (error) {
-    checks.push({ name: "data-directory", ok: false, required: true, version: config.dataDir!, message: error instanceof Error ? error.message : String(error) });
+    checks.push({ name: "data-directory", ok: false, required: true, version: config.dataDir, message: error instanceof Error ? error.message : String(error) });
   }
   return { ok: checks.every((check) => !check.required || check.ok), checks };
 }
