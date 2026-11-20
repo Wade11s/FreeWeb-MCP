@@ -7,8 +7,8 @@ Latest local verification for the MVP plus the first Initialization ticket:
 ```text
 npm run check
   TypeScript: passed
-  Unit tests: 477 passed across 20 files
-  In-memory, real-stdio and external CLI integration tests: 63 passed across 5 files
+  Unit tests: 480 passed across 21 files
+  In-memory, real-stdio and external CLI integration tests: 65 passed across 5 files
   Build: passed
 
 npm audit
