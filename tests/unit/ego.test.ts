@@ -64,43 +64,10 @@ interface SimTab {
   readonly active: boolean;
 }
 
-interface SimIdentity {
-  url: string | null;
-  title: string | null;
-}
-
-function simIdentityOf(tab: SimTab | SimIdentity): SimIdentity {
-  return {
-    url: typeof tab.url === "string" ? tab.url : null,
-    title: typeof tab.title === "string" ? tab.title : null,
-  };
-}
-
-function simIdentityKey(value: SimTab | SimIdentity): string {
-  return JSON.stringify(simIdentityOf(value));
-}
-
-function parseScriptIdentities(source: string, pattern: RegExp): Record<string, SimIdentity> {
-  const match = pattern.exec(source);
-  if (!match) return {};
-  const parsed = JSON.parse(match[1]) as unknown;
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-  const result: Record<string, SimIdentity> = {};
-  for (const [label, value] of Object.entries(parsed)) {
-    if (!label || !value || typeof value !== "object" || Array.isArray(value)) continue;
-    const identity = value as Record<string, unknown>;
-    result[label] = {
-      url: typeof identity.url === "string" ? identity.url : null,
-      title: typeof identity.title === "string" ? identity.title : null,
-    };
-  }
-  return result;
-}
-
 /**
  * Models ego-lite 0.6.3.14: finish(keep) retains tab objects in their original order but
- * drops their labels, and the next claim sees those unlabeled tabs. Adoption is applied to
- * the specific tab object selected by the generated script, so identity mistakes are visible.
+ * drops their labels, and the next claim sees those unlabeled tabs. Restoration assigns
+ * labels to those exact tab objects from the saved tab-order label list.
  */
 class LabelLifecycleRunner implements EgoRunner {
   readonly calls: EgoRunRequest[] = [];
@@ -122,23 +89,23 @@ class LabelLifecycleRunner implements EgoRunner {
     }));
   }
 
-  identityMap(): Record<string, SimIdentity> {
-    return Object.fromEntries(
-      this.tabs
-        .filter((tab): tab is SimTab & { label: string } => tab.label !== null)
-        .map((tab) => [tab.label, simIdentityOf(tab)]),
-    );
+  pageOrder(): string[] {
+    return this.tabs.map((tab) => tab.label).filter((label): label is string => label !== null);
+  }
+
+  labelsByTabId(): Record<string, string | null> {
+    return Object.fromEntries(this.tabs.map((tab) => [tab.id, tab.label]));
   }
 
   labelForUrl(url: string): string | null {
     return this.tabs.find((tab) => tab.url === url)?.label ?? null;
   }
 
-  changeIdentity(url: string, replacement: string): void {
+  changeIdentity(url: string, replacement: string, title?: string): void {
     const tab = this.tabs.find((entry) => entry.url === url);
     if (!tab) throw new Error(`no tab with url ${url}`);
     tab.url = replacement;
-    tab.title = `Changed ${replacement}`;
+    tab.title = title ?? `Changed ${replacement}`;
   }
 
   private errorResult(request: EgoRunRequest, code: string, message: string, details: Record<string, unknown>): EgoRunResult {
@@ -149,7 +116,7 @@ class LabelLifecycleRunner implements EgoRunner {
     this.calls.push(request);
     const script = request.script;
     const keptPages = parseScriptArray(script, /const KEPT_PAGES = (\[[^\]]*\]);/);
-    const pageIdentities = parseScriptIdentities(script, /const PAGE_IDENTITIES = (\{[^\n]*\});/);
+    const pageOrder = parseScriptArray(script, /const PAGE_ORDER = (\[[^\]]*\]);/);
     const pageLabel = /const PAGE_LABEL = "([^"]+)";/.exec(script)?.[1];
 
     if (request.kind === "finish") {
@@ -157,13 +124,11 @@ class LabelLifecycleRunner implements EgoRunner {
         ? keptPages
         : parseScriptArray(script, /await task\.finish\(\{ keep: (\[[^\]]*\]) \}\)/);
       const keptTabs = this.tabs.filter((tab) => tab.label !== null && keep.includes(tab.label));
-      const identities = Object.fromEntries(
-        keptTabs.map((tab) => [tab.label as string, simIdentityOf(tab)]),
-      );
+      const order = keptTabs.map((tab) => tab.label as string);
       // Kept tab objects stay in their original order; only their labels end.
       this.tabs = keptTabs;
       for (const tab of this.tabs) tab.label = null;
-      return egoResult(request, { ...finishPayload(7), pages: keep, pageIdentities: identities });
+      return egoResult(request, { ...finishPayload(7), pages: keep, pageOrder: order });
     }
 
     if (/const TASK_ID = null;/.test(script) && this.tabs.length === 0) {
@@ -176,40 +141,14 @@ class LabelLifecycleRunner implements EgoRunner {
 
     const candidates = this.tabs.filter((tab) => tab.label === null && tab.openedBy === "agent");
     if (candidates.length > 0) {
-      if (script.includes("pageIdentityKey(identity)")) {
-        const adopted = new Set<string>();
-        for (const tab of candidates) {
-          const matches = Object.entries(pageIdentities).filter(([label, identity]) =>
-            keptPages.includes(label) && !adopted.has(label) && simIdentityKey(identity) === simIdentityKey(tab),
-          );
-          if (matches.length !== 1) {
-            return this.errorResult(request, "EGO_PAGE_IDENTITY_MISMATCH", "cannot restore a kept Page label", {
-              identity: simIdentityOf(tab),
-              keptPages,
-            });
-          }
-          tab.label = matches[0][0];
-          adopted.add(tab.label);
-          this.adoptedAs.push(tab.label);
-        }
-        const unmatched = keptPages.filter((label) => !adopted.has(label));
-        if (unmatched.length > 0) {
-          return this.errorResult(request, "EGO_PAGE_IDENTITY_MISMATCH", "kept Pages were not restored", { unmatched });
-        }
-      } else if (script.includes("KEPT_PAGES[index]")) {
-        candidates.slice(0, keptPages.length).forEach((tab, index) => {
-          tab.label = keptPages[index] ?? null;
-          this.adoptedAs.push(tab.label);
-        });
-      } else {
-        for (const tab of candidates) {
-          tab.label = "p1";
-          this.adoptedAs.push("p1");
-        }
-      }
+      const labels = pageOrder.length ? pageOrder : keptPages;
+      candidates.forEach((tab, index) => {
+        tab.label = labels[index] ?? `p${index + 1}`;
+        this.adoptedAs.push(tab.label);
+      });
     }
 
-    const labels = this.tabs.map((tab) => tab.label).filter((label): label is string => label !== null);
+    const labels = this.pageOrder();
     if (pageLabel && !labels.includes(pageLabel)) {
       return this.errorResult(request, "EGO_PAGE_NOT_FOUND", `Page ${pageLabel} was not found`, {
         requestedPage: pageLabel,
@@ -228,7 +167,7 @@ class LabelLifecycleRunner implements EgoRunner {
       }
     }
 
-    const actualLabels = this.tabs.map((tab) => tab.label).filter((label): label is string => label !== null);
+    const actualLabels = this.pageOrder();
     const pages = this.workPages.length ? [...this.workPages] : actualLabels;
     this.lastWorkLabels = [...actualLabels];
     const value = this.workValue;
@@ -237,7 +176,7 @@ class LabelLifecycleRunner implements EgoRunner {
     return egoResult(request, {
       ...taskPayload(7, "agent", pages),
       ...(value === undefined ? {} : { value }),
-      pageIdentities: this.identityMap(),
+      pageOrder: this.pageOrder(),
     });
   }
 }
@@ -676,12 +615,21 @@ async function openWithTabs(
   runner.seedTabs(tabs);
   const registryPath = join(dataDir, "browse", "tasks.json");
   const registry = JSON.parse(await readFile(registryPath, "utf8")) as {
-    tasks: Record<string, { pages: string[]; pageIdentities?: Record<string, SimIdentity> }>;
+    tasks: Record<string, { pages: string[]; pageOrder?: string[] }>;
   };
   registry.tasks[opened.browseId]!.pages = tabs.map((tab) => tab.label);
-  registry.tasks[opened.browseId]!.pageIdentities = runner.identityMap();
+  registry.tasks[opened.browseId]!.pageOrder = runner.pageOrder();
   await writeFile(registryPath, JSON.stringify(registry));
   return opened.browseId;
+}
+
+async function removePageOrder(dataDir: string, browseId: string): Promise<void> {
+  const registryPath = join(dataDir, "browse", "tasks.json");
+  const registry = JSON.parse(await readFile(registryPath, "utf8")) as {
+    tasks: Record<string, { pageOrder?: string[] }>;
+  };
+  delete registry.tasks[browseId]!.pageOrder;
+  await writeFile(registryPath, JSON.stringify(registry));
 }
 
 let dataDir: string;
@@ -1455,7 +1403,7 @@ describe("EgoProvider Page label resolution", () => {
       args: [],
     });
     expect(worked).toMatchObject({ status: "ok", result: { observed: true }, pages: ["p2"] });
-    expect(runner.calls[before]!.script).toContain("const PAGE_IDENTITIES = ");
+    expect(runner.calls[before]!.script).toContain("const PAGE_ORDER = ");
     expect(runner.adoptedAs.at(-1)).toBe("p2");
     expect(runner.lastWorkLabels).toEqual(["p2"]);
 
@@ -1496,7 +1444,7 @@ describe("EgoProvider Page label resolution", () => {
     expect(second).toMatchObject({ status: "ok", pages: ["p2"] });
     expect(runner.lastWorkLabels).toEqual(["p1", "p2"]);
     expect(runner.adoptedAs.slice(-2).sort()).toEqual(["p1", "p2"]);
-    expect(runner.calls[before]!.script).toContain("pageIdentityKey(tab)");
+    expect(runner.calls[before]!.script).toContain("const PAGE_ORDER = ");
   });
 
   it("restores the correct label when a subset of tab-order Pages is kept", async () => {
@@ -1529,7 +1477,65 @@ describe("EgoProvider Page label resolution", () => {
     expect(runner.labelForUrl(p3Url)).toBeNull();
   });
 
-  it("errors on an unmatchable kept tab instead of adopting a guessed label", async () => {
+  it("keeps restored labels after a failed exact-label claim so retry is non-destructive", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new LabelLifecycleRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openWithTabs(dataDir, provider, runner, [
+      { label: "p1", url: "https://page.test/p1", title: "Page 1" },
+      { label: "p2", url: "https://page.test/p2", title: "Page 2" },
+    ]);
+
+    runner.workPages = ["p1"];
+    await provider.browse({ action: "call", browseId, page: "p1", method: "page.snapshot", args: [] });
+    const registryPath = join(dataDir, "browse", "tasks.json");
+    const registry = JSON.parse(await readFile(registryPath, "utf8")) as {
+      tasks: Record<string, { pages: string[] }>;
+    };
+    registry.tasks[browseId]!.pages = ["p1", "p2"];
+    await writeFile(registryPath, JSON.stringify(registry));
+    const before = runner.calls.length;
+
+    await expect(provider.browse({
+      action: "call",
+      browseId,
+      page: "p2",
+      method: "page.snapshot",
+      args: [],
+    })).rejects.toMatchObject({ code: "EGO_PAGE_NOT_FOUND" });
+    expect(runner.pageOrder()).toEqual(["p1"]);
+    expect(runner.calls.length).toBe(before + 1);
+
+    const retry = await provider.browse({
+      action: "call",
+      browseId,
+      page: "p1",
+      method: "page.snapshot",
+      args: [],
+    });
+    expect(retry).toMatchObject({ status: "ok", pages: ["p1"] });
+    expect(runner.lastWorkLabels).toEqual(["p1"]);
+  });
+
+  it("restores labels for duplicate about:blank tabs without relying on url/title", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new LabelLifecycleRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openWithTabs(dataDir, provider, runner, [
+      { label: "p1", url: "about:blank", title: "Blank" },
+      { label: "p2", url: "about:blank", title: "Blank" },
+    ]);
+
+    runner.workPages = ["p2", "p1"];
+    runner.workValue = { popup: { label: "p1" } };
+    await provider.browse({ action: "call", browseId, page: "p2", method: "page.snapshot", args: [] });
+    const worked = await provider.browse({ action: "call", browseId, page: "p2", method: "page.snapshot", args: [] });
+
+    expect(worked.status).toBe("ok");
+    expect(runner.lastWorkLabels).toEqual(["p1", "p2"]);
+  });
+
+  it("restores a kept label after navigation changes url and title", async () => {
     const config = await makeConfig(dataDir);
     const runner = new LabelLifecycleRunner();
     const provider = new EgoProvider(config, { runner });
@@ -1541,19 +1547,64 @@ describe("EgoProvider Page label resolution", () => {
 
     runner.workPages = ["p2"];
     await provider.browse({ action: "call", browseId, page: "p2", method: "page.snapshot", args: [] });
-    const changedUrl = "https://page.test/changed";
-    runner.changeIdentity(p2Url, changedUrl);
-    const before = runner.calls.length;
+    runner.changeIdentity(p2Url, "https://page.test/navigated", "Navigated");
 
-    await expect(provider.browse({
-      action: "call",
-      browseId,
-      page: "p2",
-      method: "page.snapshot",
-      args: [],
-    })).rejects.toMatchObject({ code: "EGO_PAGE_IDENTITY_MISMATCH" });
-    expect(runner.labelForUrl(changedUrl)).toBeNull();
-    expect(runner.calls.length).toBe(before + 1);
+    const worked = await provider.browse({ action: "call", browseId, page: "p2", method: "page.snapshot", args: [] });
+    expect(worked.status).toBe("ok");
+    expect(runner.lastWorkLabels).toEqual(["p2"]);
+  });
+
+  it("restores a kept label after a title-only change", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new LabelLifecycleRunner();
+    const provider = new EgoProvider(config, { runner });
+    const p2Url = "https://page.test/p2";
+    const browseId = await openWithTabs(dataDir, provider, runner, [
+      { label: "p1", url: "https://page.test/p1", title: "Page 1" },
+      { label: "p2", url: p2Url, title: "Page 2" },
+    ]);
+
+    runner.workPages = ["p2"];
+    await provider.browse({ action: "call", browseId, page: "p2", method: "page.snapshot", args: [] });
+    runner.changeIdentity(p2Url, p2Url, "Renamed");
+
+    const worked = await provider.browse({ action: "call", browseId, page: "p2", method: "page.snapshot", args: [] });
+    expect(worked.status).toBe("ok");
+    expect(runner.lastWorkLabels).toEqual(["p2"]);
+  });
+
+  it("uses registry labels deterministically for a legacy single-Page row", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new LabelLifecycleRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openWithTabs(dataDir, provider, runner, [
+      { label: "p2", url: "https://page.test/p2", title: "Page 2" },
+    ]);
+
+    runner.workPages = ["p2"];
+    await provider.browse({ action: "call", browseId, page: "p2", method: "page.snapshot", args: [] });
+    await removePageOrder(dataDir, browseId);
+
+    const worked = await provider.browse({ action: "call", browseId, page: "p2", method: "page.snapshot", args: [] });
+    expect(worked.status).toBe("ok");
+    expect(runner.lastWorkLabels).toEqual(["p2"]);
+  });
+
+  it("uses registry labels in tab order for a legacy multi-Page row", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new LabelLifecycleRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openWithTabs(dataDir, provider, runner, [
+      { label: "p1", url: "https://page.test/p1", title: "Page 1" },
+      { label: "p2", url: "https://page.test/p2", title: "Page 2" },
+    ]);
+    await removePageOrder(dataDir, browseId);
+
+    runner.workPages = ["p2", "p1"];
+    runner.workValue = { popup: { label: "p1" } };
+    const worked = await provider.browse({ action: "call", browseId, page: "p2", method: "page.snapshot", args: [] });
+    expect(worked).toMatchObject({ status: "ok", pages: ["p2", "p1"] });
+    expect(runner.lastWorkLabels).toEqual(["p1", "p2"]);
   });
 
   it("still rejects a genuinely missing label after a kept non-p1 round", async () => {
