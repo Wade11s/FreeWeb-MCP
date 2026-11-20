@@ -421,13 +421,20 @@ describe("init existing configuration handling", () => {
     const first = fakeIo(["y"]);
     expect(await runInit(first.io, deps())).toBe(0);
     const content = await readFile(configPath, "utf8");
+    await chmod(configPath, 0o644);
+    await chmod(configDir, 0o755);
 
     const second = fakeIo(["y"]);
     expect(await runInit(second.io, deps())).toBe(0);
-    expect(second.out()).toContain("no changes were made");
+    expect(second.out()).toContain("no content changes were made");
     expect(await readFile(configPath, "utf8")).toBe(content);
     expect((await readdir(configDir)).sort()).toEqual(["config.json"]);
     expect(second.out()).toContain(`existing installation at ${binary} verified`);
+    if (process.platform !== "win32") {
+      const { stat } = await import("node:fs/promises");
+      expect((await stat(configPath)).mode & 0o777).toBe(0o600);
+      expect((await stat(configDir)).mode & 0o777).toBe(0o700);
+    }
   });
 });
 

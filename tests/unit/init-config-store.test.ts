@@ -204,7 +204,7 @@ describe("non-overwriting backups", () => {
   });
 });
 
-describe("permissions on an existing file are re-asserted by replacement", () => {
+describe("permissions on an existing configuration", () => {
   it("rewrites a world-readable config to 0600 through atomic replacement", async () => {
     const store = new ConfigStore();
     const path = configPath();
@@ -226,6 +226,26 @@ describe("permissions on an existing file are re-asserted by replacement", () =>
     await store.write(path, newConfigFile());
     if (process.platform !== "win32") {
       const { stat } = await import("node:fs/promises");
+      expect((await stat(directory)).mode & 0o777).toBe(0o700);
+    }
+  });
+
+  it("enforces 0600/0700 on the no-write path without changing configuration bytes", async () => {
+    const store = new ConfigStore();
+    const directory = join(root, "complete-config");
+    const path = join(directory, "config.json");
+    await mkdir(directory, { recursive: true });
+    await writeFile(path, "{\"firecrawl\":{\"port\":3456}}\n");
+    await chmod(path, 0o644);
+    await chmod(directory, 0o755);
+    const original = await readFile(path, "utf8");
+
+    await store.enforcePermissions(path);
+
+    expect(await readFile(path, "utf8")).toBe(original);
+    if (process.platform !== "win32") {
+      const { stat } = await import("node:fs/promises");
+      expect((await stat(path)).mode & 0o777).toBe(0o600);
       expect((await stat(directory)).mode & 0o777).toBe(0o700);
     }
   });

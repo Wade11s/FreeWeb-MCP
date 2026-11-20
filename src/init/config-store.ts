@@ -214,6 +214,12 @@ export class ConfigStore {
     throw new FreeWebError("INIT_BACKUP_FAILED", `Cannot find a free backup name for ${path}`);
   }
 
+  /** Re-asserts private modes without rewriting an already-complete file. */
+  async enforcePermissions(path: string): Promise<void> {
+    await this.fs.chmod(dirname(path), 0o700);
+    await this.fs.chmod(path, 0o600);
+  }
+
   /**
    * Atomic configuration write. The target path only ever holds the complete
    * JSON from before or after the write; a failure at any point removes the

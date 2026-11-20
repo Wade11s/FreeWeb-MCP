@@ -233,11 +233,16 @@ async function writeConfigurationStep(
     value = completed.merged as unknown as Record<string, unknown>;
     added = completed.added.length;
     if (added === 0 && patches.length === 0) {
+      try {
+        await deps.store.enforcePermissions(deps.configPath);
+      } catch (error) {
+        return { ...base, outcome: "Failed", warnings: [], detail: error instanceof Error ? error.message : String(error) };
+      }
       return {
         ...base,
         outcome: "Configured",
         warnings,
-        detail: `existing configuration at ${deps.configPath} is complete; no changes were made`,
+        detail: `existing configuration at ${deps.configPath} is complete; no content changes were made; file mode 0600 and directory mode 0700 enforced`,
       };
     }
   } else {
