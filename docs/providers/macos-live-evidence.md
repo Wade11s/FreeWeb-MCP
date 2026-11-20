@@ -14,8 +14,8 @@
 | Item | Actual observation |
 | --- | --- |
 | Run date/time and timezone | 2026-11-20 20:49–20:53 local (UTC+8) |
-| macOS version (`sw_vers`) | not recorded (see narrative note) |
-| Hardware architecture (`uname -m`) | not recorded (see narrative note) |
+| macOS version (`sw_vers`) | macOS 27.2.1, build 26B131 |
+| Hardware architecture (`uname -m`) | arm64 (Apple M2) |
 | Dedicated test account or approved existing account | approved existing account |
 | Node.js | v26.13.1 |
 | FreeWeb-MCP package/version and source (release or packed tarball) | `freeweb-mcp@0.1.0`, packed tarball installed into a temporary prefix (`npm install --prefix /tmp/… --offline`), run as `prefix/node_modules/.bin/freeweb-mcp` |
@@ -88,7 +88,9 @@ After the fixes the same procedure succeeded, then reran idempotently as recorde
 
 **Windows was not live-tested. Debian/Ubuntu was not live-tested. Other Linux distributions and all other platforms were not live-tested. Their Initialization branches have simulated automated coverage only until separately verified.**
 
-macOS version and CPU architecture were not captured during this run, so the evidence does not pin the exact OS build. Everything else in this document was observed on one macOS account with a certified Firecrawl, an existing ego-lite, and no TinyFish key.
+All observations in this document come from one macOS account (macOS 27.2.1, arm64) with a certified Firecrawl, an existing ego-lite, and no TinyFish key.
+
+One further limitation is environmental rather than product-side: this host resolves public names through a fake-IP DNS proxy, so `example.com` resolves to `198.18.1.136`. The remote-URL guard correctly refuses the `198.18.0.0/15` benchmark range as non-public, which means the opt-in `tests/live/firecrawl.test.ts` page-fetch cases cannot run here without weakening the SSRF rule. That guard was left untouched. The code path the live run needed to prove — starting the real `firecrawl-local serve`, reading its `/health`, and shutting it down with bounded cleanup — was exercised by `init` itself and is recorded above.
 
 Even after this run, TinyFish `Configured` (if separately chosen by the account holder) would attest only to key presence and the holder's explicit statement; it would not prove service, quota, or billing behavior. ego command/native verification does not prove every Browse or Profile path is ready.
 
