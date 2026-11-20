@@ -95,10 +95,10 @@ function deps(overrides: Partial<InitDeps> = {}): InitDeps {
 
 type Behavior = "healthy" | "exit" | "hang";
 
-async function writeFakeFirecrawl(options: { version?: string; behavior?: Behavior } = {}): Promise<{ binary: string; log: string }> {
+async function writeFakeFirecrawl(options: { version?: string; behavior?: Behavior; binary?: string } = {}): Promise<{ binary: string; log: string }> {
   const version = options.version ?? "0.1.0";
   const behavior = options.behavior ?? "healthy";
-  const binary = join(binDir, "firecrawl-local");
+  const binary = options.binary ?? join(binDir, "firecrawl-local");
   const log = join(root, "firecrawl.log");
   const script = `#!/usr/bin/env node
 import { appendFile } from "node:fs/promises";
@@ -350,6 +350,56 @@ describe("init version handling", () => {
 });
 
 describe("init Firecrawl automatic installation", () => {
+  it("preserves a stale explicit binary path on install, then converges through a confirmed repair on rerun", async () => {
+    const cargoHome = join(root, "cargo-home");
+    const binary = join(cargoHome, "bin", "firecrawl-local");
+    const staleBinary = "/gone/firecrawl-local";
+    const commands: string[] = [];
+    const component = createFirecrawlComponent({
+      platform: "darwin",
+      commandRunner: async (call) => {
+        commands.push(`${call.command} ${call.args.join(" ")}`);
+        if (["rustc", "cc"].includes(call.command) || (call.command === "cargo" && call.args[0] === "--version")) {
+          return { exitCode: 0, stdout: `${call.command} 1.0.0\n`, stderr: "" };
+        }
+        if (call.command === "cargo" && call.args[0] === "install") {
+          await mkdir(dirname(binary), { recursive: true });
+          await writeFakeFirecrawl({ binary });
+          return { exitCode: 0, stdout: "Installed firecrawl-local 0.1.0\n", stderr: "" };
+        }
+        if (call.command === binary && call.args[0] === "--version") {
+          return { exitCode: 0, stdout: "firecrawl-local 0.1.0\n", stderr: "" };
+        }
+        throw new Error(`unexpected command ${call.command} ${call.args.join(" ")}`);
+      },
+      startRuntime: async () => ({
+        baseUrl: "http://127.0.0.1:1",
+        isAlive: () => true,
+        onDead: () => {},
+        request: async () => ({ status: "ok", engine: "firecrawl-local", version: "0.1.0" }),
+        close: async () => {},
+      }),
+    });
+    await writeExistingConfig({ firecrawl: { binary: staleBinary } });
+    const initDeps = () => deps({ components: [component], env: baseEnv({ CARGO_HOME: cargoHome }) });
+
+    const first = fakeIo(["y"]);
+    expect(await runInit(first.io, initDeps())).toBe(1);
+    expect(first.out()).toContain("Firecrawl Local: Installed");
+    expect(first.out()).toContain("every explicit value is preserved");
+    expect(first.out()).not.toContain(`Update firecrawl.binary from ${staleBinary}`);
+    expect(((await readConfigFile()).firecrawl as Record<string, unknown>).binary).toBe(staleBinary);
+
+    commands.length = 0;
+    const second = fakeIo(["y", "y"]);
+    expect(await runInit(second.io, initDeps())).toBe(0);
+    expect(second.out()).toContain(`firecrawl.binary: ${staleBinary} -> ${binary}`);
+    expect(second.out()).toContain(`Update firecrawl.binary from ${staleBinary} to ${binary}`);
+    expect(second.out()).toContain("applied 1 confirmed repair");
+    expect(((await readConfigFile()).firecrawl as Record<string, unknown>).binary).toBe(binary);
+    expect(commands.some((call) => call.startsWith("cargo install"))).toBe(false);
+  });
+
   it("installs the version-pinned crates.io release on Debian, verifies it, and is idempotent on rerun", async () => {
     const cargoHome = join(root, "cargo-home");
     const binary = join(cargoHome, "bin", "firecrawl-local");

@@ -146,6 +146,7 @@ chmodSync(target, 0o755);
 interface PtyResult {
   status: number | null;
   output: string;
+  promptCount: number;
 }
 
 /** Searches file contents, not variable names, for an exact credential value. */
@@ -221,7 +222,12 @@ function runCliInPty(answers: readonly string[], overrides: Record<string, strin
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolveRun({ status: code, output: output.replace(/\r/g, "") });
+        const normalizedOutput = output.replace(/\r/g, "");
+        resolveRun({
+          status: code,
+          output: normalizedOutput,
+          promptCount: (normalizedOutput.match(/\[y\/N\]/g) ?? []).length,
+        });
       });
     }, rejectRun);
   });
@@ -275,6 +281,7 @@ describe.skipIf(!hasExpect)("built CLI interactive init behind a pseudo-terminal
     await writeFakeFirecrawl();
     const result = await runCliInPty(["y", "n"]);
     expect(result.status).toBe(0);
+    expect(result.promptCount).toBe(3);
     expect(result.output).toContain("FreeWeb-MCP initialization plan:");
     expect(result.output).toContain("Firecrawl Local: Installed");
     expect(result.output).toContain("Open the official ego-lite download page");
@@ -327,6 +334,7 @@ describe.skipIf(!hasExpect)("built CLI interactive init behind a pseudo-terminal
 
     const first = await runCliInPty(["y", "y", "y"], { TINYFISH_API_KEY: secret });
     expect(first.status).toBe(0);
+    expect(first.promptCount).toBe(4);
     expect(first.output).toContain("TinyFish Search/Fetch: Configured");
     expect(first.output).toContain("This TinyFish API key belongs to an account with no wallet spending capability; free credits, a zero balance, disabled auto-reload, and installation success are not substitutes for this attestation.");
     expect(first.output).toContain("Successful Initialization does not prove TinyFish service or account readiness");
@@ -345,6 +353,7 @@ describe.skipIf(!hasExpect)("built CLI interactive init behind a pseudo-terminal
 
     const second = await runCliInPty(["y"], { TINYFISH_API_KEY: secret });
     expect(second.status).toBe(0);
+    expect(second.promptCount).toBe(2);
     expect(second.output).toContain("TinyFish Search/Fetch: Configured");
     expect(second.output).toContain("no content changes were made");
     expect(second.output).not.toContain("Confirm the Free attestation:");
@@ -471,6 +480,7 @@ describe.skipIf(!hasExpect)("built CLI automatic Firecrawl installation behind a
     await writeInstallTools();
     const result = await runCliInPty(["y"]);
     expect(result.status).toBe(0);
+    expect(result.promptCount).toBe(3);
     expect(result.output).toContain("install firecrawl-local 0.1.0 from crates.io");
     expect(result.output).toContain("cargo install firecrawl-local --version 0.1.0");
     expect(result.output).toContain("Firecrawl Local: Installed");

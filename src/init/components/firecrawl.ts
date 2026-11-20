@@ -338,14 +338,19 @@ export function createFirecrawlComponent(deps: FirecrawlComponentDeps = {}): Ini
       };
     }
 
-    const configPatches = [{ setting: "firecrawl.binary", value: binary }];
+    // Installing a missing binary does not approve replacing an explicit
+    // stale value. Leave it untouched; the next detection finds this binary
+    // and offers the old → new repair for its own confirmation.
+    const configPatches = detection.staleConfiguredPath
+      ? undefined
+      : [{ setting: "firecrawl.binary", value: binary }];
     const verification = await verify({ binary, timeouts: input.timeouts });
     if (!verification.ok) {
       return {
         ...base,
         outcome: "Failed",
         warnings: [],
-        detail: `installed firecrawl-local ${CERTIFIED_FIRECRAWL_VERSION} at ${binary}, but the owned loopback Cloud Off health check failed: ${verification.message ?? "unknown error"}; the resolved binary path was recorded so a rerun verifies rather than reinstalls it. ${chromeNote}`,
+        detail: `installed firecrawl-local ${CERTIFIED_FIRECRAWL_VERSION} at ${binary}, but the owned loopback Cloud Off health check failed: ${verification.message ?? "unknown error"}; ${configPatches ? "the resolved binary path was recorded so a rerun verifies rather than reinstalls it" : "the explicit configured path was left unchanged so a rerun can propose a confirmed repair"}. ${chromeNote}`,
         configPatches,
       };
     }

@@ -216,7 +216,11 @@ export function createEgoComponent(deps: EgoComponentDeps = {}): InitComponent {
           detail: `could not open the official ego-lite download page (${EGO_DOWNLOAD_URL}) on ${platform}: ${errorMessage(error)}; no installation was attempted`,
         };
       }
-      if (!commandSucceeded(launch)) {
+      // explorer.exe characteristically exits 1 even after it opens the URL,
+      // so its exit code is not the success signal. A resolved, non-timed-out
+      // spawn is enough on Windows; spawn rejections above remain failures.
+      const launchSucceeded = platform === "win32" ? !launch.timedOut : commandSucceeded(launch);
+      if (!launchSucceeded) {
         return {
           ...base,
           outcome: "Failed",

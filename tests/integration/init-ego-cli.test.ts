@@ -133,6 +133,7 @@ exec node ${JSON.stringify(scriptPath)} ${JSON.stringify(name)} "$@"\n`;
 interface PtyResult {
   status: number | null;
   output: string;
+  promptCount: number;
 }
 
 /**
@@ -197,7 +198,12 @@ function runCliInPty(answers: readonly string[], overrides: Record<string, strin
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolveRun({ status: code, output: output.replace(/\r/g, "") });
+        const normalizedOutput = output.replace(/\r/g, "");
+        resolveRun({
+          status: code,
+          output: normalizedOutput,
+          promptCount: (normalizedOutput.match(/\[y\/N\]/g) ?? []).length,
+        });
       });
     }, rejectRun);
   });
@@ -225,6 +231,7 @@ describe.skipIf(!hasExpect)("built CLI ego-lite handoff (platforms simulated wit
     const result = await runCliInPty(["y", "y", "y"]);
 
     expect(result.status).toBe(0);
+    expect(result.promptCount).toBe(4);
     expect(result.output).toContain(`after plan confirmation, ask before opening the official ego-lite download page (${EGO_DOWNLOAD_URL})`);
     expect(result.output).toContain("Open the official ego-lite download page");
     expect(result.output).toContain("Opened the official ego-lite download page");
@@ -246,6 +253,7 @@ describe.skipIf(!hasExpect)("built CLI ego-lite handoff (platforms simulated wit
     const result = await runCliInPty(["y", "y", "y"], { ...PLATFORM_SIMULATION, FREEWEB_INIT_PLATFORM: "win32" });
 
     expect(result.status).toBe(0);
+    expect(result.promptCount).toBe(4);
     expect(result.output).toContain("on win32");
     expect(await readLog(openerLog)).toEqual([`explorer.exe|["${EGO_DOWNLOAD_URL}"]`]);
     expect((await readLog(openerLog)).some((line) => line.startsWith("open|"))).toBe(false);

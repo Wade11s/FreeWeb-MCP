@@ -227,8 +227,8 @@ describe("ego-lite init handoff and verification", () => {
     expect(result.detail).toContain("Browse use still depends on your GUI choices");
   });
 
-  it("opens the exact official URL through explorer.exe in a simulated Windows flow", async () => {
-    const { runner, calls } = recorder();
+  it("treats explorer.exe exit 1 as a successful simulated Windows launch", async () => {
+    const { runner, calls } = recorder({ open: { exitCode: 1, stderr: "explorer characteristic exit" } });
     const component = createEgoComponent({ commandRunner: runner });
     const overrides = simulatedPlatform("win32");
     const { io, questions } = fakeIo([true, true]);
@@ -349,16 +349,22 @@ describe("ego-lite init handoff and verification", () => {
     expect(calls).toEqual([]);
   });
 
-  it("reports an installer-launch failure as Failed before asking for onboarding consent", async () => {
+  it("reports a genuine simulated Windows opener spawn failure before asking for onboarding consent", async () => {
     const { io, questions } = fakeIo([true, true]);
     const component = createEgoComponent({
-      commandRunner: async () => { throw new Error("simulated open failure"); },
+      commandRunner: async (call) => {
+        expect(call.command).toBe("explorer.exe");
+        throw new Error("spawn explorer.exe ENOENT");
+      },
     });
 
-    const result = await component.execute(executeInput({ installed: false, certified: false }, { io }));
+    const result = await component.execute(executeInput(
+      { installed: false, certified: false },
+      { io, overrides: simulatedPlatform("win32") },
+    ));
 
     expect(result.outcome).toBe("Failed");
-    expect(result.detail).toContain("simulated open failure");
+    expect(result.detail).toContain("spawn explorer.exe ENOENT");
     expect(questions).toHaveLength(1);
     expect(questions[0]).toContain("Open the official ego-lite download page");
   });
