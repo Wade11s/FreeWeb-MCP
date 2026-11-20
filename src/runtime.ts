@@ -1,11 +1,9 @@
-import { readFile, realpath, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative } from "node:path";
-import type { ContentBlock } from "@modelcontextprotocol/server";
+import type { CallToolResult } from "@modelcontextprotocol/server";
 import { ArtifactStore } from "./artifacts/artifact-store.js";
+import { ArtifactOutput } from "./artifacts/output.js";
 import type { AppConfig } from "./config.js";
 import { CrawlManager } from "./crawl/crawl-manager.js";
-import { FreeWebError } from "./errors.js";
+import { ManagedBrowseToolCall } from "./mcp/managed-browse-tool-call.js";
 import type { FreeWebToolHandlers } from "./mcp/runtime-interface.js";
 import { EgoProvider } from "./providers/ego.js";
 import { FirecrawlLocalProvider, FirecrawlSearchProvider } from "./providers/firecrawl.js";
@@ -25,6 +23,8 @@ export class FreeWebRuntime implements FreeWebToolHandlers {
   private readonly router: ProviderRouter;
   private readonly crawls: CrawlManager;
   private readonly ego: EgoRuntime;
+  private readonly output: ArtifactOutput;
+  private readonly managedBrowse: ManagedBrowseToolCall;
   private readonly firecrawl: FirecrawlLocalProvider;
   private readonly maintenance: NodeJS.Timeout;
 
@@ -37,17 +37,25 @@ export class FreeWebRuntime implements FreeWebToolHandlers {
     const firecrawlSearch = config.firecrawl.searchFallback
       ? new FirecrawlSearchProvider(config.firecrawl)
       : undefined;
-    this.router = new ProviderRouter({ config, artifacts: this.artifacts, tinyfish, firecrawl: this.firecrawl, firecrawlSearch });
+    const output = new ArtifactOutput(this.artifacts);
+    this.output = output;
+    this.router = new ProviderRouter({ config, output, tinyfish, firecrawl: this.firecrawl, firecrawlSearch });
     this.crawls = new CrawlManager({
       adapter: this.firecrawl,
       root: config.dataDir!,
-      artifacts: this.artifacts,
+      output,
       maxJobs: config.limits.maxCrawlJobs,
       inlineTotalChars: config.artifacts.inlineFetchTotalChars,
       inlinePageChars: config.artifacts.inlineFetchPageChars,
       retentionMs: config.artifacts.retentionMs,
     });
-    this.ego = dependencies.ego ?? new EgoProvider(config, { artifacts: this.artifacts });
+    this.ego = dependencies.ego ?? new EgoProvider(config, { artifacts: this.artifacts, output });
+    this.managedBrowse = new ManagedBrowseToolCall({
+      browse: this.browse.bind(this),
+      artifacts: this.artifacts,
+      dataDir: config.dataDir,
+      screenshotMaxBytes: config.artifacts.screenshotMaxBytes,
+    });
     this.unrestricted = config.ego.unrestricted;
     this.maintenance = setInterval(() => {
       void Promise.allSettled([this.crawls.cleanup(), this.artifacts.cleanup(), this.ego.reapExpired()]);
@@ -81,6 +89,7 @@ export class FreeWebRuntime implements FreeWebToolHandlers {
   async crawlStatus(input: CrawlStatusInput) { return this.crawls.status(input); }
   async crawlCancel(input: { crawlId: string }) { return this.crawls.cancel(input); }
   async browse(input: BrowseInput) { return this.boundedBrowseOutput(await this.ego.browse(input)); }
+  async managedBrowseToolCall(input: BrowseInput): Promise<CallToolResult> { return this.managedBrowse.run(input); }
   async browseEvaluate(input: BrowseEvaluateInput) { return this.boundedBrowseOutput(await this.ego.evaluate(input)); }
 
   async browseNode(input: BrowseNodeInput): Promise<BrowseNodeOutput> {
@@ -88,52 +97,12 @@ export class FreeWebRuntime implements FreeWebToolHandlers {
   }
 
   private async boundedBrowseOutput(output: Awaited<ReturnType<EgoProvider["browse"]>>) {
-    const serialized = JSON.stringify(output);
-    if (serialized.length <= this.config.artifacts.inlineFetchTotalChars) return output;
-    const artifact = await this.artifacts.save({ data: serialized, mimeType: "application/json" });
-    return {
-      ...output,
-      result: {
-        summary: "Large Browse result is available as an Artifact",
-        artifactId: artifact.id,
-        originalChars: serialized.length,
-      },
-      artifactId: artifact.id,
-    };
-  }
-
-  async browseScreenshot(result: unknown): Promise<ContentBlock | undefined> {
-    const candidate = typeof result === "string"
-      ? result
-      : typeof result === "object" && result !== null && "path" in result && typeof result.path === "string"
-        ? result.path
-        : undefined;
-    if (!candidate?.endsWith(".png")) return undefined;
-    const resolved = await realpath(candidate);
-    const inside = (root: string, path: string) => {
-      const rel = relative(root, path);
-      return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-    };
-    const downloads = await realpath(join(this.config.dataDir, "downloads")).catch(() => undefined);
-    const temporary = await realpath(tmpdir());
-    const allowed = (downloads && inside(downloads, resolved))
-      || (dirname(resolved) === temporary && basename(resolved).startsWith("ego-browser-shot-"));
-    if (!allowed) {
-      throw new FreeWebError("EGO_PATH_FORBIDDEN", "Screenshot path is outside managed downloads and ego temporary screenshots", { provider: "ego-lite" });
-    }
-    const info = await stat(resolved);
-    if (info.size <= this.config.artifacts.screenshotMaxBytes) {
-      const data = await readFile(resolved);
-      return { type: "image", data: data.toString("base64"), mimeType: "image/png" };
-    }
-    const artifact = await this.artifacts.saveFile({ sourcePath: resolved, mimeType: "image/png" });
-    return {
-      type: "resource_link",
-      uri: artifact.uri,
-      name: "ego-lite screenshot",
-      description: "Screenshot exceeded the inline image budget",
-      mimeType: "image/png",
-    };
+    const published = await this.output.publish({
+      kind: "managed-output",
+      output,
+      inlineTotalChars: this.config.artifacts.inlineFetchTotalChars,
+    });
+    return published.output;
   }
 
   async close(): Promise<void> {

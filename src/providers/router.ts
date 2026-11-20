@@ -1,9 +1,9 @@
-import { ArtifactStore } from "../artifacts/artifact-store.js";
+import { ArtifactOutput } from "../artifacts/output.js";
 import type { AppConfig } from "../config.js";
 import { FreeWebError, errorInfo } from "../errors.js";
 import type { Attempt, FetchInput, FetchOutput, MapInput, MapOutput, SearchInput, SearchOutput } from "../types.js";
 import { Semaphore, SlidingWindowLimiter } from "../util/limiter.js";
-import type { FetchProvider, FirecrawlAdapter, SearchProvider } from "./interfaces.js";
+import type { FetchMapAdapter, FetchProvider, SearchProvider } from "./interfaces.js";
 import { assertPublicHttpUrl } from "../security/url.js";
 
 export class ProviderRouter {
@@ -15,9 +15,9 @@ export class ProviderRouter {
 
   constructor(private readonly options: {
     config: AppConfig;
-    artifacts: ArtifactStore;
+    output: ArtifactOutput;
     tinyfish?: SearchProvider & FetchProvider;
-    firecrawl: FirecrawlAdapter;
+    firecrawl: FetchMapAdapter;
     firecrawlSearch?: SearchProvider;
     cloudUrlValidator?: (url: string) => Promise<URL>;
   }) {
@@ -43,9 +43,10 @@ export class ProviderRouter {
         attempts.push({ provider: name, outcome: "skipped", durationMs: 0, code: "PROVIDER_NOT_CONFIGURED", message: "Provider is not configured" });
         continue;
       }
-      if (name === "firecrawl-search" && input.options && Object.values(input.options).some((value) => value !== undefined)) {
-        lastError = new FreeWebError("FALLBACK_UNSUPPORTED", "Firecrawl Search cannot preserve TinyFish-specific filters", { provider: name });
-        attempts.push({ provider: name, outcome: "skipped", durationMs: 0, code: "FALLBACK_UNSUPPORTED", message: "Provider-specific filters are incompatible" });
+      const verdict = provider.inspectSearch(input);
+      if (!verdict.supported) {
+        lastError = verdict.error;
+        attempts.push({ provider: name, outcome: "skipped", durationMs: 0, code: verdict.code, message: verdict.message });
         continue;
       }
       const started = Date.now();
@@ -96,18 +97,36 @@ export class ProviderRouter {
       ? ["firecrawl-local", "tinyfish"]
       : ["tinyfish", "firecrawl-local"];
     const attempts: Attempt[] = [];
-    if (input.provider !== "auto") {
-      const provider = primary === "tinyfish" ? this.options.tinyfish : this.options.firecrawl;
-      const reason = !provider ? "Requested provider is not configured" : this.fetchUnsupportedReason(primary, input);
-      if (reason) attempts.push({ provider: primary, outcome: "skipped", durationMs: 0, code: provider ? "UNSUPPORTED_OPTION" : "PROVIDER_NOT_CONFIGURED", message: reason });
-    }
-    const candidates = (input.fallback ? names : names.slice(0, 1)).filter((name) => {
+    const requestedNames = input.fallback ? names : names.slice(0, 1);
+    const eligibility = new Map<Name, {
+      provider?: FetchProvider;
+      verdict?: ReturnType<FetchProvider["inspectFetch"]>;
+    }>();
+    for (const name of requestedNames) {
       const provider = name === "tinyfish" ? this.options.tinyfish : this.options.firecrawl;
-      return provider && this.fetchUnsupportedReason(name, input) === undefined;
+      eligibility.set(name, {
+        ...(provider ? { provider } : {}),
+        ...(provider ? { verdict: provider.inspectFetch(input) } : {}),
+      });
+    }
+    const primaryEligibility = eligibility.get(primary)!;
+    if (input.provider !== "auto") {
+      if (!primaryEligibility.provider) {
+        attempts.push({ provider: primary, outcome: "skipped", durationMs: 0, code: "PROVIDER_NOT_CONFIGURED", message: "Requested provider is not configured" });
+      } else if (primaryEligibility.verdict && !primaryEligibility.verdict.supported) {
+        attempts.push({ provider: primary, outcome: "skipped", durationMs: 0, code: primaryEligibility.verdict.code, message: primaryEligibility.verdict.message });
+      }
+    }
+    const candidates = requestedNames.filter((name) => {
+      const state = eligibility.get(name)!;
+      return state.provider !== undefined && state.verdict?.supported === true;
     });
     if (candidates.length === 0) {
-      const reason = this.fetchUnsupportedReason(primary, input);
-      if (reason) throw new FreeWebError("UNSUPPORTED_OPTION", reason, { provider: primary });
+      // A refusal needs an adapter verdict. A missing adapter is never preflighted, so an
+      // unconfigured explicit primary reports ALL_PROVIDERS_FAILED even when its options
+      // would have been refused: the Router no longer carries provider-specific rules.
+      const refusal = primaryEligibility.verdict;
+      if (refusal && !refusal.supported) throw new FreeWebError("UNSUPPORTED_OPTION", refusal.message, { provider: primary });
       throw new FreeWebError("ALL_PROVIDERS_FAILED", "No configured Fetch provider can preserve the requested options", {
         details: { attempts, urls: input.urls },
       });
@@ -220,7 +239,12 @@ export class ProviderRouter {
       });
     }
     const actualProvider = results[results.length - 1].provider ?? firstName;
-    const budgeted = await this.applyFetchBudgets(results);
+    const budgeted = await this.options.output.publish({
+      kind: "fetch",
+      results,
+      inlinePageChars: this.options.config.artifacts.inlineFetchPageChars,
+      inlineTotalChars: this.options.config.artifacts.inlineFetchTotalChars,
+    });
     return {
       provider: actualProvider,
       requestedProvider: input.provider,
@@ -238,122 +262,23 @@ export class ProviderRouter {
     };
   }
 
-  private async applyFetchBudgets(results: FetchOutput["results"]) {
-    const artifactIds: string[] = [];
-    let remainingTotal = this.options.config.artifacts.inlineFetchTotalChars;
-    const budgetedResults: FetchOutput["results"] = [];
-    for (const originalPage of results) {
-      let page = originalPage;
-      const screenshot = this.decodeScreenshot(page.formats.screenshot);
-      if (screenshot) {
-        const artifact = await this.options.artifacts.save({ data: screenshot.data, mimeType: screenshot.mimeType });
-        artifactIds.push(artifact.id);
-        const formats = { ...page.formats };
-        delete formats.screenshot;
-        page = { ...page, formats, screenshotArtifactId: artifact.id };
-      }
-      const originalLength = Object.values(page.formats).reduce<number>((sum, value) => sum + this.fetchValueChars(value), 0)
-        + (page.links ? this.fetchValueChars(page.links) : 0);
-      const budget = Math.min(this.options.config.artifacts.inlineFetchPageChars, remainingTotal);
-      if (originalLength > budget) {
-        const artifact = await this.options.artifacts.save({ data: JSON.stringify(page), mimeType: "application/json" });
-        artifactIds.push(artifact.id);
-        let remaining = budget;
-        let truncated = false;
-        const formats: Record<string, unknown> = {};
-        for (const [key, value] of Object.entries(page.formats)) {
-          if (typeof value === "string") {
-            formats[key] = value.slice(0, remaining);
-            truncated ||= value.length > remaining;
-            remaining = Math.max(0, remaining - value.length);
-          } else {
-            const serialized = JSON.stringify(value) ?? "";
-            if (serialized.length <= remaining) {
-              formats[key] = value;
-            } else {
-              formats[key] = serialized.slice(0, remaining);
-              truncated = true;
-            }
-            remaining = Math.max(0, remaining - serialized.length);
-          }
-        }
-        let links = page.links;
-        if (links) {
-          const serializedLinks = JSON.stringify(links);
-          if (serializedLinks.length <= remaining) {
-            remaining -= serializedLinks.length;
-          } else {
-            const kept: string[] = [];
-            let linkChars = 2;
-            for (const link of links) {
-              linkChars += link.length + 3;
-              if (linkChars > remaining) break;
-              kept.push(link);
-            }
-            links = kept;
-            truncated = true;
-          }
-        }
-        budgetedResults.push({ ...page, formats, ...(links ? { links } : { links: undefined }), truncated: true });
-      } else {
-        budgetedResults.push(page);
-      }
-      remainingTotal = Math.max(0, remainingTotal - Math.min(originalLength, budget));
-    }
-    return { results: budgetedResults, artifactIds: artifactIds.length ? artifactIds : undefined };
-  }
-
-  private fetchValueChars(value: unknown): number {
-    return typeof value === "string" ? value.length : (JSON.stringify(value)?.length ?? 0);
-  }
-
-  private decodeScreenshot(value: unknown): { data: Buffer; mimeType: string } | undefined {
-    if (typeof value !== "string") return undefined;
-    const dataUrl = value.match(/^data:(image\/(?:png|jpeg|gif|webp));base64,(.+)$/s);
-    const base64 = dataUrl?.[2] ?? value;
-    if (!/^[A-Za-z0-9+/=\r\n]+$/.test(base64) || base64.length < 16) return undefined;
-    const data = Buffer.from(base64, "base64");
-    const mimeType = dataUrl?.[1]
-      ?? (data[0] === 0x89 && data[1] === 0x50 ? "image/png"
-        : data[0] === 0xff && data[1] === 0xd8 ? "image/jpeg"
-          : data.subarray(0, 4).toString() === "GIF8" ? "image/gif"
-            : data.subarray(0, 4).toString() === "RIFF" && data.subarray(8, 12).toString() === "WEBP" ? "image/webp"
-              : undefined);
-    return mimeType ? { data, mimeType } : undefined;
-  }
-
-  private fetchUnsupportedReason(name: "firecrawl-local" | "tinyfish", input: FetchInput): string | undefined {
-    const tinyfishOnly = new Set(["json"]);
-    const firecrawlOnly = new Set(["rawHtml", "screenshot"]);
-    if (name === "firecrawl-local" && input.formats.some((format) => tinyfishOnly.has(format))) return "Firecrawl Local does not support JSON extraction";
-    if (name === "tinyfish" && input.formats.some((format) => firecrawlOnly.has(format))) return "TinyFish does not support rawHtml or screenshot";
-    if (name === "tinyfish" && input.timeoutMs > 110_000) return "TinyFish does not support timeoutMs above 110000";
-    if (name === "tinyfish" && input.formats.filter((format) => ["markdown", "html", "json"].includes(format)).length > 1) {
-      return "TinyFish supports only one content format per Fetch request";
-    }
-    if (name === "tinyfish" && input.waitForMs > 0) return "TinyFish cannot preserve waitForMs";
-    if (name === "tinyfish" && (input.includeSelectors?.length || input.excludeSelectors?.length)) return "TinyFish SDK does not support CSS selector scoping";
-    if (name === "tinyfish" && !input.onlyMainContent) return "TinyFish cannot preserve onlyMainContent=false";
-    return undefined;
-  }
-
   async map(input: MapInput): Promise<MapOutput> {
     const started = Date.now();
     try {
       const { links } = await this.firecrawlSemaphore.run(() => this.options.firecrawl.map(input));
       const attempts: Attempt[] = [{ provider: "firecrawl-local", outcome: "success", durationMs: Date.now() - started }];
-      const inline: Array<{ url: string }> = [];
-      let size = 20;
-      for (const link of links) {
-        size += link.url.length + 20;
-        if (size > this.options.config.artifacts.inlineFetchTotalChars) break;
-        inline.push(link);
-      }
-      if (inline.length === links.length) {
-        return { provider: "firecrawl-local", links, truncated: false, attempts, warnings: [], partial: false };
-      }
-      const artifact = await this.options.artifacts.save({ data: JSON.stringify({ links }), mimeType: "application/json" });
-      return { provider: "firecrawl-local", links: inline, truncated: true, artifactId: artifact.id, attempts, warnings: ["Complete Map result is available as an Artifact"], partial: false };
+      const published = await this.options.output.publish({
+        kind: "map",
+        links,
+        inlineTotalChars: this.options.config.artifacts.inlineFetchTotalChars,
+      });
+      return {
+        provider: "firecrawl-local",
+        ...published,
+        attempts,
+        warnings: published.truncated ? ["Complete Map result is available as an Artifact"] : [],
+        partial: false,
+      };
     } catch (error) {
       const info = errorInfo(error, "firecrawl-local");
       throw new FreeWebError("ALL_PROVIDERS_FAILED", "Firecrawl Local Map failed", {

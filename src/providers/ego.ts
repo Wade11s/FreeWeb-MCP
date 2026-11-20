@@ -5,6 +5,7 @@ import { chmod, mkdir, open, readdir, readFile, realpath, rename, stat, unlink }
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { ArtifactStore } from "../artifacts/artifact-store.js";
+import { ArtifactOutput } from "../artifacts/output.js";
 import { configFileSchema, type AppConfig } from "../config.js";
 import { FreeWebError } from "../errors.js";
 import { assertPublicHttpUrl } from "../security/url.js";
@@ -55,6 +56,8 @@ export interface EgoProviderOptions {
   /** Alias accepted for callers that prefer an explicit provider name. */
   egoRunner?: EgoRunner;
   artifacts?: ArtifactStore;
+  /** Shared output seam; defaults to one built on `artifacts`. */
+  output?: ArtifactOutput;
   now?: () => number;
   uuid?: () => string;
   lookupFn?: typeof lookup;
@@ -568,37 +571,13 @@ function extractPayload(request: EgoRunRequest, result: EgoRunResult): EgoPayloa
   return undefined;
 }
 
-const INLINE_TRUNCATION_MARKER = "\n[truncated]";
-
-function truncateOutput(value: string, limit: number): string {
-  if (value.length <= limit) return value;
-  const room = Math.max(0, limit - INLINE_TRUNCATION_MARKER.length);
-  return `${value.slice(0, room)}${INLINE_TRUNCATION_MARKER}`.slice(0, Math.max(0, limit));
-}
-
-/**
- * Splits one inline budget across stdout and stderr. The artifact keeps both streams
- * verbatim; only the returned preview is bounded, and it never exceeds `limit`.
- */
-function inlineStreams(stdout: string, stderr: string, limit: number): { stdout: string; stderr: string } {
-  if (stdout.length + stderr.length <= limit) return { stdout, stderr };
-  let stdoutLimit = Math.min(stdout.length, Math.floor(limit / 2));
-  let stderrLimit = Math.min(stderr.length, limit - stdoutLimit);
-  const spare = limit - stdoutLimit - stderrLimit;
-  if (spare > 0) {
-    const extraStdout = Math.min(stdout.length - stdoutLimit, spare);
-    stdoutLimit += extraStdout;
-    stderrLimit += Math.min(stderr.length - stderrLimit, spare - extraStdout);
-  }
-  return { stdout: truncateOutput(stdout, stdoutLimit), stderr: truncateOutput(stderr, stderrLimit) };
-}
-
 export class EgoProvider {
   private readonly ego: AppConfig["ego"];
   private readonly dataDir: string;
   private readonly inlineNodeChars: number;
   private readonly runner: EgoRunner;
   private readonly artifacts: ArtifactStore;
+  private readonly output: ArtifactOutput;
   private readonly nowFn: () => number;
   private readonly uuidFn: () => string;
   private readonly lookupFn: typeof lookup;
@@ -624,6 +603,7 @@ export class EgoProvider {
       root: this.dataDir,
       retentionMs: config.artifacts?.retentionMs,
     });
+    this.output = resolved.output ?? new ArtifactOutput(this.artifacts);
     this.nowFn = resolved.now ?? Date.now;
     this.uuidFn = resolved.uuid ?? randomUUID;
     this.lookupFn = resolved.lookupFn ?? lookup;
@@ -673,31 +653,27 @@ export class EgoProvider {
     const { result } = invocation;
     const timedOut = result.timedOut;
     const exitCode = result.exitCode;
-    const stdout = result.stdout;
-    const stderr = result.stderr;
-    const artifact = await this.artifacts.save({
-      data: JSON.stringify({
-        stdout,
-        stderr,
-        exitCode,
-        signal: result.signal ?? null,
-        durationMs: result.durationMs,
-        timedOut,
-      }),
-      mimeType: "application/json",
+    const published = await this.output.publish({
+      kind: "unrestricted-output",
+      stdout: result.stdout,
+      stderr: result.stderr,
+      exitCode,
+      signal: result.signal,
+      durationMs: result.durationMs,
+      timedOut,
+      inlineNodeChars: this.inlineNodeChars,
     });
-    const inline = inlineStreams(stdout, stderr, this.inlineNodeChars);
     return {
       exitCode,
       ...(result.signal ? { signal: result.signal } : {}),
-      stdout: inline.stdout,
-      stderr: inline.stderr,
+      stdout: published.stdout,
+      stderr: published.stderr,
       durationMs: result.durationMs,
       timedOut,
       // An unrestricted Node script always may outlive the runner (orphaned child
       // processes, sockets, timers or files), even when it exits 0.
       mayHaveLateEffects: true,
-      artifactId: artifact.id,
+      artifactId: published.artifactId,
     };
   }
 
@@ -1322,9 +1298,9 @@ egoCallValue = await page.evaluate(expression);`,
   }
 
   /**
-   * A payload too large for the runner's bounded stdout is handed over as a file. Register
-   * that file as a real Artifact and delete the hand-off copy so the bytes live in exactly
-   * one place with the usual retention rules.
+   * A payload too large for the runner's bounded stdout is handed over as a file. This method
+   * owns the provenance check; ArtifactOutput owns the storage mechanics and the summary
+   * rewrite, and its save failures become EGO_ARTIFACT_FAILED here.
    */
   private async consumeManagedResult(payload: EgoPayload, expectedPath: string): Promise<void> {
     if (typeof payload.artifactPath !== "string") return;
@@ -1337,30 +1313,14 @@ egoCallValue = await page.evaluate(expression);`,
         details: { artifactPath: declared },
       });
     }
-    const bytes = typeof payload.artifactBytes === "number" ? payload.artifactBytes : undefined;
-    let descriptor;
     try {
-      descriptor = await this.artifacts.saveFile({ sourcePath: candidate, mimeType: "application/json" });
+      await this.output.publish({ kind: "managed-handoff", payload, sourcePath: candidate });
     } catch (error) {
       throw new FreeWebError("EGO_ARTIFACT_FAILED", "Cannot store the managed ego result", {
         provider: PROVIDER,
         cause: error,
       });
-    } finally {
-      // The hand-off copy never outlives this call. On a failed save the full payload would
-      // otherwise sit on disk forever, so the unlink must not depend on success.
-      await unlink(candidate).catch(() => undefined);
     }
-    delete payload.artifactPath;
-    delete payload.artifactBytes;
-    // Provider-owned: set only after the bytes were really stored as an Artifact, and read
-    // by outputFor instead of the untrusted `value.artifactId`.
-    payload.handoffArtifactId = descriptor.id;
-    payload.value = {
-      truncated: payload.truncated === true,
-      bytes: bytes ?? descriptor.size,
-      artifactId: descriptor.id,
-    };
   }
 
   private async invoke(script: string, timeoutMs: number, kind: EgoRunRequest["kind"], marker = this.uuidFn()): Promise<Invocation> {

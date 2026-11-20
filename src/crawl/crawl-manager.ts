@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { ArtifactStore } from "../artifacts/artifact-store.js";
+import { ArtifactOutput } from "../artifacts/output.js";
 import { FreeWebError, errorInfo } from "../errors.js";
-import type { CrawlProviderSnapshot, FirecrawlAdapter } from "../providers/interfaces.js";
+import type { CrawlJobAdapter, CrawlJobSnapshot } from "./crawl-job-adapter.js";
 import type { CrawlInput, CrawlOutput, CrawlStatusInput } from "../types.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 1000;
@@ -38,8 +38,8 @@ export class CrawlManager {
   private readonly refreshFailures = new Map<string, number>();
   private readonly fingerprints = new Map<string, string>();
   private readonly root: string;
-  private readonly adapter: FirecrawlAdapter;
-  private readonly artifacts: ArtifactStore;
+  private readonly adapter: CrawlJobAdapter;
+  private readonly artifactOutput: ArtifactOutput;
   private readonly pollIntervalMs: number;
   private readonly inlineTotalChars: number;
   private readonly inlinePageChars: number;
@@ -51,9 +51,9 @@ export class CrawlManager {
   private closed = false;
 
   constructor(options: {
-    adapter: FirecrawlAdapter;
+    adapter: CrawlJobAdapter;
     root: string;
-    artifacts: ArtifactStore;
+    output: ArtifactOutput;
     pollIntervalMs?: number;
     inlineTotalChars?: number;
     inlinePageChars?: number;
@@ -64,7 +64,7 @@ export class CrawlManager {
   }) {
     this.adapter = options.adapter;
     this.root = join(options.root, "crawls");
-    this.artifacts = options.artifacts;
+    this.artifactOutput = options.output;
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.inlineTotalChars = Math.max(0, options.inlineTotalChars ?? DEFAULT_INLINE_TOTAL_CHARS);
     this.inlinePageChars = Math.max(0, options.inlinePageChars ?? 50_000);
@@ -300,7 +300,7 @@ export class CrawlManager {
     const job = this.requireJob(crawlId);
     if (job.status !== "scraping" || this.closed) return;
 
-    let snapshot: CrawlProviderSnapshot;
+    let snapshot: CrawlJobSnapshot;
     try {
       snapshot = await this.adapter.getCrawl(job.providerJobId);
     } catch (error) {
@@ -384,23 +384,18 @@ export class CrawlManager {
     }
   }
 
-  private output(job: JobRecord, input: CrawlStatusInput): CrawlOutput {
+  private async output(job: JobRecord, input: CrawlStatusInput): Promise<CrawlOutput> {
     const warnings = this.warnings.get(job.crawlId) ?? [];
     const errors = [...job.errors, ...warnings];
-    const pages: CrawlOutput["pages"] = [];
-    let remaining = this.inlineTotalChars;
-    let inlineBudgetHit = false;
-    for (const page of job.pages.slice(input.offset, input.offset + input.limit)) {
-      if (remaining <= 0) {
-        inlineBudgetHit = true;
-        break;
-      }
-      const allowance = Math.min(input.maxCharsPerPage, remaining);
-      const truncatedPage = this.truncatePage(page, allowance);
-      pages.push(truncatedPage);
-      remaining -= this.inlineChars(truncatedPage);
-      if (truncatedPage.truncated && allowance < input.maxCharsPerPage) inlineBudgetHit = true;
-    }
+    const preview = await this.artifactOutput.publish({
+      kind: "crawl-preview",
+      pages: job.pages,
+      offset: input.offset,
+      limit: input.limit,
+      maxCharsPerPage: input.maxCharsPerPage,
+      inlineTotalChars: this.inlineTotalChars,
+    });
+    const pages = preview.pages;
     return {
       crawlId: job.crawlId,
       providerJobId: job.providerJobId,
@@ -409,7 +404,7 @@ export class CrawlManager {
       completed: job.completed,
       offset: input.offset,
       returned: pages.length,
-      hasMore: inlineBudgetHit || input.offset + pages.length < job.pages.length,
+      hasMore: preview.inlineBudgetHit || input.offset + pages.length < job.pages.length,
       pages,
       errors,
       partial: job.status !== "completed" || errors.length > 0,
@@ -418,46 +413,11 @@ export class CrawlManager {
     };
   }
 
-  private inlineChars(page: CrawlOutput["pages"][number]): number {
-    let total = 0;
-    for (const value of Object.values(page.formats)) {
-      total += typeof value === "string" ? value.length : (JSON.stringify(value)?.length ?? 0);
-    }
-    return total;
-  }
-
-  private truncatePage(page: CrawlOutput["pages"][number], maxChars: number): CrawlOutput["pages"][number] {
-    let remaining = maxChars;
-    let truncated = false;
-    const formats: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(page.formats)) {
-      if (typeof value !== "string") {
-        const serialized = JSON.stringify(value) ?? "";
-        if (serialized.length <= remaining) {
-          formats[key] = value;
-          remaining -= serialized.length;
-        } else {
-          formats[key] = serialized.slice(0, remaining);
-          remaining = 0;
-          truncated = true;
-        }
-      } else if (value.length <= remaining) {
-        formats[key] = value;
-        remaining -= value.length;
-      } else {
-        formats[key] = value.slice(0, remaining);
-        remaining = 0;
-        truncated = true;
-      }
-    }
-    return { ...page, formats, ...(truncated ? { truncated: true } : {}) };
-  }
-
   private async finalize(job: JobRecord): Promise<void> {
     if (job.artifactId) return;
-    const descriptor = await this.artifacts.save({
-      data: JSON.stringify({ ...job, artifactId: undefined, artifactExpiresAt: undefined }),
-      mimeType: "application/json",
+    const descriptor = await this.artifactOutput.publish({
+      kind: "crawl-checkpoint",
+      source: { ...job, artifactId: undefined, artifactExpiresAt: undefined },
     });
     job.artifactId = descriptor.id;
     job.artifactExpiresAt = descriptor.expiresAt;

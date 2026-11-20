@@ -19,7 +19,7 @@ import {
 import type { AppConfig } from "../config.js";
 import { FreeWebError } from "../errors.js";
 import type { FetchInput, FetchPage, FetchOutput, SearchInput, SearchOutput } from "../types.js";
-import type { FetchProvider, SearchProvider } from "./interfaces.js";
+import { refused, SUPPORTED, type FetchProvider, type ProviderPreflight, type SearchProvider } from "./interfaces.js";
 
 /** Minimal structural surface of the official SDK client used by this provider. */
 export interface TinyFishClientHandle {
@@ -55,10 +55,24 @@ type ClientKind = "search" | "fetch";
 const SEARCH_DOMAIN_TYPES = ["web", "news", "research_paper"] as const;
 const CONTENT_FORMATS = ["markdown", "html", "json"] as const;
 type ContentFormat = (typeof CONTENT_FORMATS)[number];
+const UNSUPPORTED_FETCH_FORMATS = ["rawHtml", "screenshot"] as const;
+type UnsupportedFetchFormat = (typeof UNSUPPORTED_FETCH_FORMATS)[number];
 const SDK_MAX_PER_URL_TIMEOUT_MS = 110_000;
 
 function isContentFormat(value: string): value is ContentFormat {
   return (CONTENT_FORMATS as readonly string[]).includes(value);
+}
+
+function isUnsupportedFetchFormat(value: string): value is UnsupportedFetchFormat {
+  return (UNSUPPORTED_FETCH_FORMATS as readonly string[]).includes(value);
+}
+
+function unsupportedFetchFormats(input: FetchInput): UnsupportedFetchFormat[] {
+  return (input.formats ?? []).filter(isUnsupportedFetchFormat);
+}
+
+function selectedContentFormats(input: FetchInput): ContentFormat[] {
+  return (input.formats ?? ["markdown"]).filter(isContentFormat);
 }
 
 interface SearchOptionExtras {
@@ -192,6 +206,58 @@ function isHttpUrl(value: string): boolean {
   }
 }
 
+/**
+ * One definition per capability rule. The Router-facing preflight and the direct
+ * `fetchPlan()` read the same predicates but keep their own historical order and
+ * messages, so neither path can drift from the other.
+ */
+const FETCH_PREDICATES = {
+  rawHtmlOrScreenshot: (input: FetchInput): boolean => unsupportedFetchFormats(input).length > 0,
+  timeoutTooLong: (input: FetchInput): boolean =>
+    (input.timeoutMs ?? 30_000) > SDK_MAX_PER_URL_TIMEOUT_MS,
+  multipleContentFormats: (input: FetchInput): boolean => selectedContentFormats(input).length > 1,
+  waitForMs: (input: FetchInput): boolean => (input.waitForMs ?? 0) > 0,
+  selectors: (input: FetchInput): boolean =>
+    Boolean(input.includeSelectors?.length || input.excludeSelectors?.length),
+  onlyMainContentOff: (input: FetchInput): boolean => input.onlyMainContent === false,
+  formatsWithoutEquivalent: (input: FetchInput): boolean =>
+    selectedContentFormats(input).length === 0 && !(input.formats ?? []).includes("links"),
+};
+
+const FETCH_PREFLIGHT_RULES: ReadonlyArray<{
+  predicate: (input: FetchInput) => boolean;
+  message: string;
+}> = [
+  {
+    predicate: FETCH_PREDICATES.rawHtmlOrScreenshot,
+    message: "TinyFish does not support rawHtml or screenshot",
+  },
+  {
+    predicate: FETCH_PREDICATES.timeoutTooLong,
+    message: "TinyFish does not support timeoutMs above 110000",
+  },
+  {
+    predicate: FETCH_PREDICATES.multipleContentFormats,
+    message: "TinyFish supports only one content format per Fetch request",
+  },
+  { predicate: FETCH_PREDICATES.waitForMs, message: "TinyFish cannot preserve waitForMs" },
+  {
+    predicate: FETCH_PREDICATES.selectors,
+    message: "TinyFish SDK does not support CSS selector scoping",
+  },
+  {
+    predicate: FETCH_PREDICATES.onlyMainContentOff,
+    message: "TinyFish cannot preserve onlyMainContent=false",
+  },
+];
+
+function preflightRefusal(message: string): ProviderPreflight {
+  return refused("UNSUPPORTED_OPTION", message, new FreeWebError("UNSUPPORTED_OPTION", message, {
+    provider: "tinyfish",
+    retryable: false,
+  }));
+}
+
 export class TinyFishProvider implements SearchProvider, FetchProvider {
   readonly name = "tinyfish" as const;
 
@@ -202,8 +268,20 @@ export class TinyFishProvider implements SearchProvider, FetchProvider {
     private readonly options: TinyFishProviderOptions = {},
   ) {}
 
+  inspectSearch(_input: SearchInput): ProviderPreflight {
+    return SUPPORTED;
+  }
+
+  inspectFetch(input: FetchInput): ProviderPreflight {
+    for (const rule of FETCH_PREFLIGHT_RULES) {
+      if (rule.predicate(input)) return preflightRefusal(rule.message);
+    }
+    return SUPPORTED;
+  }
+
   private requireConfigured(): string {
     const apiKey = this.config?.apiKey;
+
     if (typeof apiKey !== "string" || apiKey.trim() === "" || this.config?.freeOnlyConfirmed !== true) {
       throw new FreeWebError("TINYFISH_NOT_CONFIGURED", "TinyFish requires an apiKey and freeOnlyConfirmed", {
         provider: "tinyfish",
@@ -325,22 +403,27 @@ export class TinyFishProvider implements SearchProvider, FetchProvider {
         retryable: false,
       });
     }
-    if (input.onlyMainContent === false) throw unsupportedOption("onlyMainContent:false");
-    if ((input.waitForMs ?? 0) > 0) throw unsupportedOption("waitForMs > 0");
-    if (input.includeSelectors?.length) throw unsupportedOption("includeSelectors");
-    if (input.excludeSelectors?.length) throw unsupportedOption("excludeSelectors");
-    if ((input.timeoutMs ?? 30_000) > SDK_MAX_PER_URL_TIMEOUT_MS) {
+    if (FETCH_PREDICATES.onlyMainContentOff(input)) throw unsupportedOption("onlyMainContent:false");
+    if (FETCH_PREDICATES.waitForMs(input)) throw unsupportedOption("waitForMs > 0");
+    if (FETCH_PREDICATES.selectors(input)) {
+      throw unsupportedOption(input.includeSelectors?.length ? "includeSelectors" : "excludeSelectors");
+    }
+    if (FETCH_PREDICATES.timeoutTooLong(input)) {
       throw unsupportedOption(`timeoutMs above ${SDK_MAX_PER_URL_TIMEOUT_MS}`);
     }
 
     const formats = input.formats ?? ["markdown"];
-    const unsupported = formats.filter((format) => format === "rawHtml" || format === "screenshot");
+    const unsupported = unsupportedFetchFormats(input);
     if (unsupported.length > 0) throw unsupportedOption(`format ${unsupported.join(", ")}`);
 
-    const contentFormats = formats.filter(isContentFormat);
-    if (contentFormats.length > 1) throw unsupportedOption("multiple content formats in one fetch");
+    const contentFormats = selectedContentFormats(input);
+    if (FETCH_PREDICATES.multipleContentFormats(input)) {
+      throw unsupportedOption("multiple content formats in one fetch");
+    }
     const links = formats.includes("links");
-    if (contentFormats.length === 0 && !links) throw unsupportedOption("formats without a supported equivalent");
+    if (FETCH_PREDICATES.formatsWithoutEquivalent(input)) {
+      throw unsupportedOption("formats without a supported equivalent");
+    }
     return { format: contentFormats[0], links };
   }
 

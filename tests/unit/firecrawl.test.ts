@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { configFileSchema } from "../../src/config.js";
 import { FreeWebError, errorInfo } from "../../src/errors.js";
 import {
@@ -26,6 +26,7 @@ import {
   type SpawnCall,
 } from "../../src/providers/firecrawl-process.js";
 import { FirecrawlLocalProvider, FirecrawlSearchProvider, MAX_CRAWL_PAGES } from "../../src/providers/firecrawl.js";
+import type { ProviderPreflight } from "../../src/providers/interfaces.js";
 
 class FakeStream {
   readonly dataListeners: Array<(chunk: Buffer | string) => void> = [];
@@ -1207,5 +1208,173 @@ describe("Firecrawl Local v0.1.0 provider", () => {
 
     await expect(provider.getCrawl("missing-job"))
       .rejects.toMatchObject({ code: "NOT_FOUND", options: { retryable: false } });
+  });
+});
+
+describe("Firecrawl adapter preflight", () => {
+  function expectSearchRefusal(verdict: ProviderPreflight): void {
+    if (verdict.supported) throw new Error("Expected a Firecrawl Search refusal");
+    expect(verdict.code).toBe("FALLBACK_UNSUPPORTED");
+    expect(verdict.message).toBe("Provider-specific filters are incompatible");
+    expect(verdict.error).toBeInstanceOf(FreeWebError);
+    expect(verdict.error.code).toBe("FALLBACK_UNSUPPORTED");
+    expect(verdict.error.message).toBe("Firecrawl Search cannot preserve TinyFish-specific filters");
+    expect(verdict.error.options).toMatchObject({ provider: "firecrawl-search" });
+    // The Router-facing skipped-attempt diagnostic is not the provider error message.
+    expect(verdict.message).not.toBe(verdict.error.message);
+  }
+
+  function expectJsonRefusal(verdict: ProviderPreflight): void {
+    if (verdict.supported) throw new Error("Expected a Firecrawl Local JSON refusal");
+    expect(verdict.code).toBe("UNSUPPORTED_OPTION");
+    expect(verdict.message).toBe("Firecrawl Local does not support JSON extraction");
+    expect(verdict.error).toBeInstanceOf(FreeWebError);
+    expect(verdict.error.code).toBe("UNSUPPORTED_OPTION");
+    expect(verdict.error.message).toBe("Firecrawl Local does not support JSON extraction");
+    expect(verdict.error.options).toMatchObject({ provider: "firecrawl-local" });
+  }
+
+  it("supports Firecrawl Search when no TinyFish-specific filter has a defined value", () => {
+    const provider = new FirecrawlSearchProvider(config({ searchFallback: false }), {
+      commandRunner: async () => { throw new Error("must not run"); },
+    });
+
+    expect(provider.inspectSearch(searchInputSchema.parse({ query: "hello" }))).toEqual({ supported: true });
+    expect(provider.inspectSearch(searchInputSchema.parse({ query: "hello", options: {} })))
+      .toEqual({ supported: true });
+    const undefinedOnly = {
+      ...searchInputSchema.parse({ query: "hello" }),
+      options: { location: undefined },
+    } as SearchInput;
+    expect(provider.inspectSearch(undefinedOnly)).toEqual({ supported: true });
+  });
+
+  it.each([
+    ["location", { location: "US" }],
+    ["language", { language: "en" }],
+    ["includeDomains", { includeDomains: ["example.com"] }],
+    ["excludeDomains", { excludeDomains: ["example.com"] }],
+    ["page", { page: 2 }],
+  ])("refuses Firecrawl Search for the defined %s filter", (_label, options) => {
+    const provider = new FirecrawlSearchProvider(config({ searchFallback: true }), {
+      commandRunner: async () => { throw new Error("must not run"); },
+    });
+
+    const verdict = provider.inspectSearch(searchInputSchema.parse({ query: "hello", options }));
+
+    expectSearchRefusal(verdict);
+  });
+
+  it("keeps the direct Firecrawl Search error distinct from the preflight diagnostic", async () => {
+    const provider = new FirecrawlSearchProvider(config({ searchFallback: true }), {
+      commandRunner: async () => { throw new Error("must not run"); },
+    });
+    const input = searchInputSchema.parse({ query: "hello", options: { location: "US" } });
+
+    expectSearchRefusal(provider.inspectSearch(input));
+    await expect(provider.search(input)).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPTION",
+      message: "Firecrawl search does not support MCP search options",
+      options: { provider: "firecrawl-search", details: { options: ["location"] } },
+    });
+  });
+
+  it("refuses a present-but-undefined direct Search option while preflight stays supported", async () => {
+    const runner = vi.fn(async () => { throw new Error("must not run"); });
+    const provider = new FirecrawlSearchProvider(config({ searchFallback: true }), { commandRunner: runner });
+    const input = { ...searchInputSchema.parse({ query: "hello" }), options: { location: undefined } };
+
+    expect(provider.inspectSearch(input)).toEqual({ supported: true });
+    await expect(provider.search(input)).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPTION",
+      message: "Firecrawl search does not support MCP search options",
+      options: { provider: "firecrawl-search", details: { options: ["location"] } },
+    });
+    expect(runner).not.toHaveBeenCalled();
+  });
+
+  it("supports every schema-valid Firecrawl Local format except JSON extraction", () => {
+    const provider = new FirecrawlLocalProvider(config({ port: 34660 }), {
+      spawner: () => new FakeChild(),
+    });
+    const base = { urls: ["https://example.com"] };
+
+    for (const formats of [
+      ["markdown"],
+      ["html"],
+      ["rawHtml"],
+      ["links"],
+      ["screenshot"],
+      ["markdown", "html", "rawHtml", "links", "screenshot"],
+    ]) {
+      expect(provider.inspectFetch(fetchInputSchema.parse({ ...base, formats }))).toEqual({ supported: true });
+    }
+  });
+
+  it("refuses Firecrawl Local preflight when formats include json", () => {
+    const provider = new FirecrawlLocalProvider(config({ port: 34661 }), {
+      spawner: () => new FakeChild(),
+    });
+
+    expectJsonRefusal(provider.inspectFetch(fetchInputSchema.parse({
+      urls: ["https://example.com"],
+      formats: ["markdown", "json"],
+    })));
+  });
+
+  it("keeps the direct Firecrawl Local format error distinct from the preflight diagnostic", async () => {
+    const provider = new FirecrawlLocalProvider(config({ port: 34662 }), {
+      spawner: () => new FakeChild(),
+    });
+    const input = fetchInputSchema.parse({
+      urls: ["https://example.com"],
+      formats: ["markdown", "json"],
+    });
+
+    expectJsonRefusal(provider.inspectFetch(input));
+    await expect(provider.fetch(input)).rejects.toMatchObject({
+      code: "UNSUPPORTED_FORMAT",
+      message: "Firecrawl Local cannot produce: json",
+      options: { provider: "firecrawl-local", details: { formats: ["json"] } },
+    });
+  });
+
+  it("does no I/O, starts no runtime and runs no command during preflight", () => {
+    const http = vi.fn(async () => { throw new Error("preflight must not send HTTP"); });
+    const spawner = vi.fn(() => { throw new Error("preflight must not spawn serve"); });
+    const probePort = vi.fn(async () => { throw new Error("preflight must not probe a port"); });
+    const reservePort = vi.fn(async () => { throw new Error("preflight must not reserve a port"); });
+    const commandRunner = vi.fn(async () => { throw new Error("preflight must not run a command"); });
+    const getRuntime = vi.spyOn(
+      FirecrawlLocalProvider.prototype as unknown as { getRuntime: () => Promise<unknown> },
+      "getRuntime",
+    );
+
+    try {
+      const local = new FirecrawlLocalProvider(config({ port: 34663 }), {
+        http,
+        spawner,
+        probePort,
+        reservePort,
+      });
+      const search = new FirecrawlSearchProvider(config({ searchFallback: true }), { commandRunner });
+
+      expect(local.inspectFetch(fetchInputSchema.parse({ urls: ["https://example.com"] })))
+        .toEqual({ supported: true });
+      expect(local.inspectFetch(fetchInputSchema.parse({ urls: ["https://example.com"], formats: ["json"] })).supported)
+        .toBe(false);
+      expect(search.inspectSearch(searchInputSchema.parse({ query: "hello" }))).toEqual({ supported: true });
+      expect(search.inspectSearch(searchInputSchema.parse({ query: "hello", options: { location: "US" } })).supported)
+        .toBe(false);
+
+      expect(getRuntime).not.toHaveBeenCalled();
+      expect(http).not.toHaveBeenCalled();
+      expect(spawner).not.toHaveBeenCalled();
+      expect(probePort).not.toHaveBeenCalled();
+      expect(reservePort).not.toHaveBeenCalled();
+      expect(commandRunner).not.toHaveBeenCalled();
+    } finally {
+      getRuntime.mockRestore();
+    }
   });
 });

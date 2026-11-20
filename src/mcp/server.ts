@@ -8,7 +8,6 @@ import {
   searchInputSchema, searchOutputSchema,
 } from "../types.js";
 import type { FreeWebToolHandlers } from "./runtime-interface.js";
-import { resolveEgoMethod } from "../providers/ego-methods.js";
 import { artifactIdsOf, toolFailure, toolSuccess } from "./results.js";
 
 type Handler<I, O extends Record<string, unknown>> = (input: I) => Promise<O>;
@@ -79,27 +78,7 @@ export function createMcpServer(runtime: FreeWebToolHandlers): McpServer {
     inputSchema: browseInputSchema,
     outputSchema: browseOutputSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
-  }, async (input) => {
-    try {
-      const output = await runtime.browse(input);
-      let image;
-      if (input.action === "call" && input.method && resolveEgoMethod(input.method)?.canonical === "page.screenshot" && runtime.browseScreenshot) {
-        try {
-          image = await runtime.browseScreenshot(output.result);
-        } catch (error) {
-          output.warnings = [
-            ...(output.warnings ?? []),
-            `Screenshot unavailable: ${error instanceof Error ? error.message : String(error)}`,
-          ];
-        }
-      }
-      const result = await toolSuccess(output, artifactIdsOf(output), runtime.artifacts);
-      if (image) result.content.push(image);
-      return result;
-    } catch (error) {
-      return toolFailure(error);
-    }
-  });
+  }, (input) => runtime.managedBrowseToolCall(input));
 
   server.registerTool("browse_evaluate", {
     title: "Evaluate Page JavaScript",

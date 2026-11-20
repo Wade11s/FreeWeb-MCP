@@ -1,5 +1,5 @@
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
-import type { McpServer } from "@modelcontextprotocol/server";
+import type { CallToolResult, McpServer } from "@modelcontextprotocol/server";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,11 +8,10 @@ import { ArtifactStore } from "../../src/artifacts/artifact-store.js";
 import { FreeWebError } from "../../src/errors.js";
 import { createMcpServer } from "../../src/mcp/server.js";
 import type { FreeWebToolHandlers } from "../../src/mcp/runtime-interface.js";
-import type { SearchInput } from "../../src/types.js";
+import type { BrowseInput, SearchInput } from "../../src/types.js";
 
 class FakeRuntime implements FreeWebToolHandlers {
   artifacts!: ArtifactStore;
-  browseScreenshot?: FreeWebToolHandlers["browseScreenshot"];
   unrestricted = false;
   searchInput?: SearchInput;
 
@@ -32,7 +31,7 @@ class FakeRuntime implements FreeWebToolHandlers {
   async crawl(): Promise<any> { throw new Error("not used"); }
   async crawlStatus(): Promise<any> { throw new Error("not used"); }
   async crawlCancel(): Promise<any> { throw new Error("not used"); }
-  async browse(): Promise<any> { throw new Error("not used"); }
+  async managedBrowseToolCall(_input: BrowseInput): Promise<CallToolResult> { throw new Error("not used"); }
   async browseEvaluate(): Promise<any> { throw new Error("not used"); }
   async browseNode() {
     return { exitCode: 0, stdout: "", stderr: "ok", durationMs: 1, timedOut: false, mayHaveLateEffects: false };
@@ -108,9 +107,46 @@ describe("MCP public protocol seam", () => {
     expect(result.structuredContent).toMatchObject({ exitCode: 2, mayHaveLateEffects: true });
   });
 
-  it("degrades an optional screenshot failure to a warning instead of failing Browse", async () => {
-    runtime.browse = async () => ({ status: "ok", result: "/outside/file.png" });
-    runtime.browseScreenshot = async () => { throw new FreeWebError("EGO_PATH_FORBIDDEN", "outside managed paths"); };
+  it("returns a generic Managed Browse result unchanged", async () => {
+    const output = { status: "ok", result: "done" };
+    runtime.managedBrowseToolCall = async () => ({
+      content: [{ type: "text", text: JSON.stringify(output) }],
+      structuredContent: output,
+    });
+
+    const result = await client.callTool({
+      name: "browse",
+      arguments: { action: "status" },
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(result.content).toEqual([{ type: "text", text: JSON.stringify(output) }]);
+    expect(result.structuredContent).toEqual(output);
+  });
+
+  it("presents a Managed Browse source error as a tool error", async () => {
+    const failure = { error: { code: "EGO_DOWN", message: "source failed", provider: "ego-lite" } };
+    runtime.managedBrowseToolCall = async () => ({
+      content: [{ type: "text", text: JSON.stringify(failure) }],
+      isError: true,
+    });
+
+    const result = await client.callTool({
+      name: "browse",
+      arguments: { action: "status" },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain("EGO_DOWN");
+    expect(result.structuredContent).toBeUndefined();
+  });
+
+  it("presents an already-generated screenshot warning without failing Browse", async () => {
+    const output = { status: "ok", warnings: ["Screenshot unavailable: ENOENT"] };
+    runtime.managedBrowseToolCall = async () => ({
+      content: [{ type: "text", text: JSON.stringify(output) }],
+      structuredContent: output,
+    });
 
     const result = await client.callTool({
       name: "browse",

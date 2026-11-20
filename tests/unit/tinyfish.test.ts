@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AppConfig } from "../../src/config.js";
 import { FreeWebError } from "../../src/errors.js";
+import type { ProviderPreflight } from "../../src/providers/interfaces.js";
 import {
   TinyFishProvider,
   type TinyFishClientHandle,
   type TinyFishClientOptions,
+  type TinyFishProviderOptions,
 } from "../../src/providers/tinyfish.js";
 import type { FetchInput, SearchInput } from "../../src/types.js";
 
@@ -40,6 +42,16 @@ function fakeClient(): TinyFishClientHandle {
     search: { query: vi.fn(async () => ({ query: "cats", results: [], total_results: 0, page: 0 })) },
     fetch: { getContents: vi.fn(async () => ({ results: [], errors: [] })) },
   };
+}
+
+function expectRefusal(verdict: ProviderPreflight, expectedMessage: string): void {
+  if (verdict.supported) throw new Error(`Expected refusal: ${expectedMessage}`);
+  expect(verdict.code).toBe("UNSUPPORTED_OPTION");
+  expect(verdict.message).toBe(expectedMessage);
+  expect(verdict.error).toBeInstanceOf(FreeWebError);
+  expect(verdict.error.code).toBe("UNSUPPORTED_OPTION");
+  expect(verdict.error.message).toBe(expectedMessage);
+  expect(verdict.error.options).toMatchObject({ provider: "tinyfish", retryable: false });
 }
 
 describe("TinyFishProvider configuration gate", () => {
@@ -310,6 +322,103 @@ describe("TinyFishProvider fetch mapping", () => {
 
     await expect(provider.fetch(input)).rejects.toMatchObject({ code: "UNSUPPORTED_OPTION" });
     expect(client.fetch.getContents).not.toHaveBeenCalled();
+  });
+
+  it("keeps the direct fetch evaluation order when several options are unsupported", async () => {
+    const client = fakeClient();
+    const provider = new TinyFishProvider(tinyfishConfig(), { client: client });
+
+    await expect(provider.fetch(fetchInput({
+      formats: ["rawHtml", "markdown", "html"],
+      onlyMainContent: false,
+      waitForMs: 1,
+      includeSelectors: ["main"],
+      excludeSelectors: ["nav"],
+      timeoutMs: 111_000,
+    }))).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPTION",
+      message: "TinyFish does not support onlyMainContent:false",
+      options: expect.objectContaining({ provider: "tinyfish", retryable: false }),
+    });
+    expect(client.fetch.getContents).not.toHaveBeenCalled();
+  });
+});
+
+describe("TinyFishProvider preflight", () => {
+  const provider = new TinyFishProvider(tinyfishConfig());
+
+  it("marks a schema-parsed Search input as supported", () => {
+    expect(provider.inspectSearch(searchInput())).toEqual({ supported: true });
+  });
+
+  it("marks a supported Fetch input as supported", () => {
+    expect(provider.inspectFetch(fetchInput())).toEqual({ supported: true });
+  });
+
+  it.each([
+    ["rawHtml", fetchInput({ formats: ["rawHtml"] }), "TinyFish does not support rawHtml or screenshot"],
+    ["screenshot", fetchInput({ formats: ["screenshot"] }), "TinyFish does not support rawHtml or screenshot"],
+    ["timeoutMs above 110000", fetchInput({ timeoutMs: 111_000 }), "TinyFish does not support timeoutMs above 110000"],
+    ["multiple content formats", fetchInput({ formats: ["markdown", "html"] }), "TinyFish supports only one content format per Fetch request"],
+    ["waitForMs > 0", fetchInput({ waitForMs: 1 }), "TinyFish cannot preserve waitForMs"],
+    ["includeSelectors", fetchInput({ includeSelectors: ["main"] }), "TinyFish SDK does not support CSS selector scoping"],
+    ["excludeSelectors with empty includeSelectors", fetchInput({ includeSelectors: [], excludeSelectors: ["nav"] }), "TinyFish SDK does not support CSS selector scoping"],
+    ["onlyMainContent=false", fetchInput({ onlyMainContent: false }), "TinyFish cannot preserve onlyMainContent=false"],
+  ])("refuses preflight for %s", (_label, input, message) => {
+    expectRefusal(provider.inspectFetch(input), message);
+  });
+
+  it("uses the Router-facing order when multiple options are unsupported", () => {
+    const allViolations = fetchInput({
+      formats: ["rawHtml", "markdown", "html"],
+      timeoutMs: 111_000,
+      waitForMs: 1,
+      includeSelectors: ["main"],
+      excludeSelectors: ["nav"],
+      onlyMainContent: false,
+    });
+
+    expectRefusal(provider.inspectFetch(allViolations), "TinyFish does not support rawHtml or screenshot");
+
+    const withoutRawFormats: FetchInput = {
+      ...allViolations,
+      formats: ["markdown", "html"],
+    };
+    expectRefusal(provider.inspectFetch(withoutRawFormats), "TinyFish does not support timeoutMs above 110000");
+
+    const withoutLongTimeout = { ...withoutRawFormats, timeoutMs: 30_000 };
+    expectRefusal(provider.inspectFetch(withoutLongTimeout), "TinyFish supports only one content format per Fetch request");
+
+    const withoutMultipleFormats: FetchInput = { ...withoutLongTimeout, formats: ["markdown"] };
+    expectRefusal(provider.inspectFetch(withoutMultipleFormats), "TinyFish cannot preserve waitForMs");
+
+    const withoutWait = { ...withoutMultipleFormats, waitForMs: 0 };
+    expectRefusal(provider.inspectFetch(withoutWait), "TinyFish SDK does not support CSS selector scoping");
+
+    const withoutSelectors = { ...withoutWait, includeSelectors: [], excludeSelectors: [] };
+    expectRefusal(provider.inspectFetch(withoutSelectors), "TinyFish cannot preserve onlyMainContent=false");
+  });
+
+  it("never calls the SDK client, client factory, validator or ArtifactStore", () => {
+    const client = fakeClient();
+    const clientFactory = vi.fn((_options: TinyFishClientOptions) => fakeClient());
+    const validator = vi.fn(async (_url: string) => new URL("https://example.com"));
+    const artifactStore = { save: vi.fn() };
+    const ioProvider = new TinyFishProvider(tinyfishConfig(), {
+      client,
+      clientFactory,
+      // Router-owned collaborators must stay outside the synchronous preflight path.
+      ...({ cloudUrlValidator: validator, artifacts: artifactStore } as unknown as TinyFishProviderOptions),
+    });
+
+    expect(ioProvider.inspectSearch(searchInput())).toEqual({ supported: true });
+    expect(ioProvider.inspectFetch(fetchInput({ formats: ["rawHtml"] })).supported).toBe(false);
+
+    expect(client.search.query).not.toHaveBeenCalled();
+    expect(client.fetch.getContents).not.toHaveBeenCalled();
+    expect(clientFactory).not.toHaveBeenCalled();
+    expect(validator).not.toHaveBeenCalled();
+    expect(artifactStore.save).not.toHaveBeenCalled();
   });
 });
 

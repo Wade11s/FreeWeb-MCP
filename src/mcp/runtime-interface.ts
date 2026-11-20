@@ -1,4 +1,4 @@
-import type { ContentBlock } from "@modelcontextprotocol/server";
+import type { CallToolResult } from "@modelcontextprotocol/server";
 import type { ArtifactStore } from "../artifacts/artifact-store.js";
 import type {
   BrowseEvaluateInput, BrowseInput, BrowseNodeInput, BrowseNodeOutput, BrowseOutput,
@@ -15,8 +15,7 @@ export interface FreeWebToolHandlers {
   crawl(input: CrawlInput): Promise<CrawlOutput>;
   crawlStatus(input: CrawlStatusInput): Promise<CrawlOutput>;
   crawlCancel(input: { crawlId: string }): Promise<CrawlOutput>;
-  browse(input: BrowseInput): Promise<BrowseOutput>;
+  managedBrowseToolCall(input: BrowseInput): Promise<CallToolResult>;
   browseEvaluate(input: BrowseEvaluateInput): Promise<BrowseOutput>;
   browseNode(input: BrowseNodeInput): Promise<BrowseNodeOutput>;
-  browseScreenshot?(result: unknown): Promise<ContentBlock | undefined>;
 }
