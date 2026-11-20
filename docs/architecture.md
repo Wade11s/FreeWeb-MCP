@@ -22,7 +22,7 @@ The dispatcher loads package metadata once and supplies the same version to Comm
 
 ## Modules
 
-- **FreeWebRuntime** coordinates configuration, providers, URL checks and shutdown. Providers start lazily. Fetch uses the shared proxy-aware URL policy: explicitly configured public trusted DNS servers are consulted only for an all-fake-ip system answer, and the same configuration is retained at TinyFish's public-only Provider boundary. URL-policy failures occur before Provider Fallback.
+- **FreeWebRuntime** coordinates configuration, providers, URL checks and shutdown. Providers start lazily. Fetch and Crawl use the shared proxy-aware URL policy: explicitly configured public trusted DNS servers are consulted only for an all-fake-ip system answer, and the same configuration is retained at TinyFish's public-only Provider boundary. URL-policy failures occur before Provider Fallback and, for Crawl, before a Crawl Job or Provider request exists.
 - **ProviderRouter** owns Search/Fetch/Map provider selection, one-alternate fallback, local rate/concurrency budgets, structured attempts and inline output budgets.
 - **FirecrawlLocalProvider** owns the local v0.1.0 HTTP contract and its child serve process. The serve process uses loopback, an owned port and FIRECRAWL_CLOUD=off. Unexpected process death invalidates the cached runtime for lazy restart; startup can be aborted during close, and a closed provider cannot revive itself. Crawl marks three consecutive provider refresh failures as failed instead of polling forever.
 - **TinyFishProvider** uses only the official SDK Search and Fetch resources with maxRetries: 0.
