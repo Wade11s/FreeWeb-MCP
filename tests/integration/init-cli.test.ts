@@ -31,16 +31,27 @@ afterEach(async () => {
 
 function cliEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
   const base = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
-  return {
+  const env: NodeJS.ProcessEnv = {
     ...base,
     PATH: [binDir, dirname(process.execPath), "/usr/bin", "/bin"].join(delimiter),
     HOME: homeDir,
     CARGO_HOME: join(root, "cargo-home"),
     FREEWEB_CONFIG: configPath,
     FREEWEB_DATA_DIR: join(root, "data"),
-    TINYFISH_API_KEY: "",
-    ...overrides,
   };
+  // A developer's provider/toolchain overrides must not change what detection resolves.
+  for (const key of [
+    "TINYFISH_API_KEY",
+    "FIRECRAWL_LOCAL_BIN",
+    "FIRECRAWL_CHROME_PATH",
+    "CARGO_INSTALL_ROOT",
+    "RUSTUP_HOME",
+    "CC",
+    "CXX",
+  ]) {
+    delete env[key];
+  }
+  return { ...env, ...overrides };
 }
 
 function runCli(args: string[], overrides: Record<string, string> = {}): { status: number | null; stdout: string; stderr: string } {
