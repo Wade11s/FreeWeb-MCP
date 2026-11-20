@@ -1,9 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { Command, CommanderError } from "commander";
-import { registerDoctor } from "./commands/doctor.js";
-import { registerHelp } from "./commands/help.js";
-import { registerMcp } from "./commands/mcp.js";
-import { registerPrintConfig } from "./commands/print-config.js";
+import { declareDoctor, registerDoctor } from "./commands/doctor.js";
+import { declareHelp, registerHelp } from "./commands/help.js";
+import { declareMcp, registerMcp } from "./commands/mcp.js";
+import { declarePrintConfig, registerPrintConfig } from "./commands/print-config.js";
 import { text } from "./text.js";
 
 /**
@@ -32,115 +32,126 @@ async function readPackageVersion(): Promise<string> {
   return parsed.version;
 }
 
-function buildProgram(version: string, ctx: CliContext, result: { code: number }): Command {
-  const program = new Command();
-  program
+/** Routes Commander's output hooks through the CLI context seam. */
+function outputHooks(ctx: CliContext): { writeOut(output: string): void; writeErr(diagnostics: string): void } {
+  return {
+    writeOut: (output) => ctx.out(output),
+    writeErr: (diagnostics) => ctx.err(diagnostics),
+  };
+}
+
+/** Program shape shared by the real program and the validation probe. */
+function baseProgram(ctx: CliContext): Command {
+  return new Command()
     .name("freeweb-mcp")
     .description("Free-first local Web MCP using Firecrawl Local, TinyFish and ego-lite")
-    .version(version, "-v, --version", "output the version number")
     .helpOption("-h, --help", "display help for command")
-    .configureOutput({
-      writeOut: (help) => ctx.out(help),
-      writeErr: (diagnostics) => ctx.err(diagnostics),
-    })
+    .configureOutput(outputHooks(ctx))
     .exitOverride()
     .allowExcessArguments(false)
     .helpCommand(false);
+}
 
+function buildProgram(version: string, ctx: CliContext, result: { code: number }): Command {
+  const program = baseProgram(ctx).version(version, "-v, --version", "output the version number");
   registerMcp(program, ctx, result);
   registerDoctor(program, ctx, result);
   registerPrintConfig(program, ctx);
   registerHelp(program, ctx, result);
-
   return program;
 }
 
-/** Matches option tokens that make Commander print help or version and stop parsing. */
-function shortCircuits(token: string): boolean {
-  return /^(-h|--help|-v|--version)/.test(token);
+/**
+ * A program shaped exactly like the real one — same commands, descriptions,
+ * options, argument arity, strict positionals, and output hooks — but with
+ * every action, the help option, and the version option removed, so parsing
+ * it can only validate argv or report a usage error: it can never act, load
+ * configuration, or print help. Program-level options beyond help/version,
+ * should any be added later, must be declared here as well to stay validated
+ * rather than rejected.
+ */
+function buildProbe(ctx: CliContext): Command {
+  const probe = baseProgram(ctx).helpOption(false);
+  declareMcp(probe);
+  declareDoctor(probe);
+  declarePrintConfig(probe);
+  declareHelp(probe);
+  return probe;
 }
 
-/** Names the option `token` refers to, ignoring an attached `=value` form. */
-function optionName(token: string): string {
-  return token.split("=", 1)[0]!;
+/** Exact argv tokens that make Commander print help or the version and skip every other check. */
+const SHORT_CIRCUIT_FLAGS: ReadonlySet<string> = new Set(["-h", "--help", "-v", "--version"]);
+
+interface SplitArgv {
+  /** argv without its exact help/version tokens, up to the first `--`. */
+  rest: string[];
+  /** The first operand when a help/version flag preceded it, else undefined. */
+  commandAfterFlag: string | undefined;
 }
 
-/** True when `token` names an option of `command` that consumes the next argv slot. */
-function consumesValue(command: Command, token: string): boolean {
-  const name = optionName(token);
-  const option = command.options.find((candidate) => candidate.long === name || candidate.short === name);
-  return option?.required === true;
-}
-
-/** Replicates Commander's excess-arguments diagnostic so gated argv fails identically. */
-function tooManyArguments(command: Command, received: string[]): string {
-  const expected = command.registeredArguments.length;
-  const plural = expected === 1 ? "" : "s";
-  const owner = command.parent ? ` for '${command.name()}'` : "";
-  return `error: too many arguments${owner}. Expected ${expected} argument${plural} but got ${received.length}: ${received.join(", ")}.`;
+/** True when `token` is an operand rather than an option (`-` alone is an operand). */
+function isOperand(token: string): boolean {
+  return !(token.length > 1 && token.startsWith("-"));
 }
 
 /**
- * Strict-argument policy. Commander acts on help/version flags while it is
- * still parsing options and before it validates positional arguments, so a
- * non-option token combined with such a flag (`doctor extra --version`,
- * `--help mcp`) would print help or the version and exit 0. When argv holds
- * such a flag, this pass applies the positional rules up front: the first
- * non-option token must name a command, a `help` target must name a command,
- * and no command may take excess positionals. Without such a flag,
- * Commander's own checks are equivalent and keep their richer diagnostics,
- * so the pass stands down.
+ * Removes the exact `-h`, `--help`, `-v`, and `--version` tokens so the
+ * remaining argv can be validated without Commander short-circuiting.
+ * Recognition is anchored to whole tokens only: near misses (`-vv`, `-v=1`,
+ * `--version=1`) and clustered flags stay in place for validation to reject.
+ * Tokens after `--` stay untouched: those are positionals.
  */
-function enforceStrictArguments(argv: readonly string[], program: Command): void {
-  let flagged = false;
-  for (const token of argv) {
-    if (token === "--") break;
-    if (shortCircuits(token)) {
-      flagged = true;
-      break;
-    }
-  }
-  if (!flagged) return;
-
-  let context: Command = program;
-  let sawFlagBeforeCommand = false;
-  let onlyPositionals = false;
-  const positionals: string[] = [];
-
+function stripShortCircuitFlags(argv: readonly string[]): SplitArgv {
+  const rest: string[] = [];
+  let firstOperand: string | undefined;
+  let flagBeforeOperand = false;
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i]!;
-    if (!onlyPositionals && token === "--") {
-      onlyPositionals = true;
+    if (token === "--") {
+      rest.push(...argv.slice(i));
+      break;
+    }
+    if (SHORT_CIRCUIT_FLAGS.has(token)) {
+      if (firstOperand === undefined) flagBeforeOperand = true;
       continue;
     }
-    if (!onlyPositionals && token.length > 1 && token.startsWith("-")) {
-      if (context === program && shortCircuits(token)) sawFlagBeforeCommand = true;
-      if (consumesValue(context, token)) i += 1;
-      continue;
-    }
-    if (context === program) {
-      const takesCommandSlot = positionals.length === 0 && !sawFlagBeforeCommand;
-      const target = takesCommandSlot ? program.commands.find((command) => command.name() === token) : undefined;
-      if (target) {
-        context = target;
-        continue;
-      }
-      program.error(
-        takesCommandSlot ? `error: unknown command '${token}'` : tooManyArguments(program, [token]),
-        takesCommandSlot ? { code: "commander.unknownCommand" } : { code: "commander.excessArguments" },
-      );
-    }
-    positionals.push(token);
+    if (firstOperand === undefined && isOperand(token)) firstOperand = token;
+    rest.push(token);
   }
+  return { rest, commandAfterFlag: flagBeforeOperand ? firstOperand : undefined };
+}
 
-  const registered = context.registeredArguments;
-  const variadic = registered.length > 0 && registered[registered.length - 1]!.variadic;
-  if (!variadic && positionals.length > registered.length) {
-    context.error(tooManyArguments(context, positionals), { code: "commander.excessArguments" });
+/**
+ * Strict-usage pre-pass. Commander acts on help/version flags before it
+ * checks unknown options, option values, and positional arity, so argv like
+ * `--nope --version` would print the version and exit 0 with the usage error
+ * unreported. This pass parses the argv with the exact help/version tokens
+ * stripped on a probe built from the same declarations; every error the
+ * probe raises is a usage error Commander would have masked, so it is thrown
+ * and the real parse never runs. Unknown options, unknown commands, excess
+ * positionals, and bad option values all fall out of Commander's own rules.
+ *
+ * Two shapes cannot come from the probe: operand-free argv (`--help`, `-v --`,
+ * `--`) is left to the real parse, because the probe program registers no
+ * options of its own and would only report its own lack of an action; and a
+ * program-level help/version flag followed by a command token
+ * (`--version mcp`) parses cleanly on the probe, yet Commander would answer
+ * the flag and ignore the token — such a token is rejected as the excess
+ * program argument it is, with Commander's own excess-argument diagnostic.
+ */
+async function rejectMaskedUsageErrors(argv: readonly string[], program: Command, ctx: CliContext): Promise<void> {
+  const { rest, commandAfterFlag } = stripShortCircuitFlags(argv);
+  if (rest.length === 0 || (rest.length === 1 && rest[0] === "--")) return;
+  await buildProbe(ctx).parseAsync(rest, { from: "user" });
+  if (commandAfterFlag === undefined || !program.commands.some((command) => command.name() === commandAfterFlag)) {
+    return;
   }
-  if (context.name() === "help" && positionals.length === 1 && !program.commands.some((command) => command.name() === positionals[0])) {
-    context.error(`error: unknown help topic '${positionals[0]}'`, { code: "commander.unknownHelpTopic" });
-  }
+  const excess = new Command()
+    .allowExcessArguments(false)
+    .exitOverride()
+    .configureOutput(outputHooks(ctx));
+  // Always fails: this program takes no arguments but is handed the command token.
+  await excess.parseAsync([commandAfterFlag], { from: "user" });
 }
 
 /**
@@ -160,7 +171,7 @@ export async function runCli(argv: readonly string[], ctx: CliContext): Promise<
       return 0;
     }
 
-    enforceStrictArguments(argv, program);
+    await rejectMaskedUsageErrors(argv, program, ctx);
     await program.parseAsync([...argv], { from: "user" });
     return result.code;
   } catch (error) {

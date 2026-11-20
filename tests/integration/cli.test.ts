@@ -144,11 +144,49 @@ describe("built CLI surface", () => {
   });
 
   it("fails excess positionals even when combined with a help or version flag", () => {
-    for (const args of [["-v", "extra"], ["--version", "extra"], ["--help", "extra"], ["--help", "mcp"], ["doctor", "extra", "--version"], ["mcp", "extra", "--help"]]) {
+    for (const args of [["--help", "mcp"], ["-v", "mcp"], ["--version", "doctor"], ["doctor", "extra", "--version"], ["mcp", "extra", "--help"]]) {
       const result = runCli(args);
       expect(result.status).toBe(1);
       expect(result.stdout).toBe("");
       expect(result.stderr).toContain("too many arguments");
+    }
+    for (const args of [["-v", "extra"], ["--version", "extra"], ["--help", "extra"]]) {
+      const result = runCli(args);
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("unknown command");
+    }
+  });
+
+  it("fails unknown options even when combined with help or version flags", () => {
+    for (const args of [
+      ["--help", "--nope"], ["--nope", "--help"], ["--json", "--help"], ["--help", "--json"],
+      ["--nope", "--version"], ["--version", "--nope"], ["doctor", "--nope", "--version"],
+      ["doctor", "--nope", "--help"], ["doctor", "--help", "--nope"], ["mcp", "--nope", "--help"],
+      ["doctor", "--json=true", "--help"],
+    ]) {
+      const result = runCli(args);
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("unknown option");
+    }
+  });
+
+  it("fails near-miss version and help flags instead of treating them as --version", () => {
+    for (const args of [["-vv"], ["-v=1"], ["-vh"], ["doctor", "-vv"], ["mcp", "-vv"], ["--version=1"], ["--version=1", "mcp"]]) {
+      const result = runCli(args);
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("unknown option");
+    }
+  });
+
+  it("keeps -- terminating option parsing", () => {
+    for (const args of [["--", "--version"], ["--", "--help"], ["doctor", "--", "--json"], ["doctor", "--", "extra"]]) {
+      const result = runCli(args);
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).not.toBe("");
     }
   });
 
@@ -160,7 +198,7 @@ describe("built CLI surface", () => {
   });
 
   it("keeps command help valid alongside other flags", () => {
-    for (const args of [["doctor", "--help"], ["doctor", "--json", "--help"], ["mcp", "--help"], ["help", "mcp"]]) {
+    for (const args of [["doctor", "--help"], ["doctor", "--json", "--help"], ["doctor", "--help", "--json"], ["mcp", "--help"], ["help", "mcp"]]) {
       const result = runCli(args);
       expect(result.status).toBe(0);
       expect(result.stderr).toBe("");
