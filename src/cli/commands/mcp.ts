@@ -15,11 +15,12 @@ export function declareMcp(program: Command): Command {
 }
 
 /**
- * Registers the `mcp` subcommand: load and validate business configuration,
- * then run the stdio MCP server until a shutdown signal arrives.
+ * Registers the `mcp` subcommand action on the command declareCommands
+ * produced: load and validate business configuration, then run the stdio
+ * MCP server until a shutdown signal arrives.
  */
-export function registerMcp(program: Command, ctx: CliContext, result: { code: number }): void {
-  declareMcp(program).action(async () => {
+export function registerMcp(mcp: Command, ctx: CliContext, result: { code: number }): void {
+  mcp.action(async () => {
       const config = await loadConfig();
       await runMcpCommand(config, ctx);
       result.code = 0;

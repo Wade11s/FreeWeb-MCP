@@ -14,13 +14,14 @@ export function declarePrintConfig(program: Command): Command {
 }
 
 /**
- * Registers the `print-config` subcommand: print an example MCP client
- * configuration that starts this executable with the explicit `mcp`
- * subcommand, so a client configured from the output speaks JSON-RPC.
- * Business configuration is never loaded.
+ * Registers the `print-config` subcommand action on the command
+ * declareCommands produced: print an example MCP client configuration that
+ * starts this executable with the explicit `mcp` subcommand, so a client
+ * configured from the output speaks JSON-RPC. Business configuration is
+ * never loaded.
  */
-export function registerPrintConfig(program: Command, ctx: CliContext): void {
-  declarePrintConfig(program).action(() => {
+export function registerPrintConfig(printConfig: Command, ctx: CliContext): void {
+  printConfig.action(() => {
       ctx.out(text(JSON.stringify({
         mcpServers: {
           freeweb: {

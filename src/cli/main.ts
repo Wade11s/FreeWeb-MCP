@@ -54,12 +54,37 @@ function baseProgram(ctx: CliContext): Command {
     .helpCommand(false);
 }
 
-function buildProgram(version: string, ctx: CliContext, result: { code: number }): Command {
+/** Subcommands declared by declareCommands, keyed for action registration. */
+interface DeclaredCommands {
+  mcp: Command;
+  doctor: Command;
+  printConfig: Command;
+  help: Command;
+}
+
+/**
+ * The single declaration seam for subcommands: every command is declared
+ * here, once, and both the real program and the validation probe shape
+ * their tree from these declarations alone. A command added here reaches
+ * both trees; a command missing here reaches neither — the drift test in
+ * tests/unit/cli-program.test.ts holds the two trees to these declarations.
+ */
+function declareCommands(program: Command): DeclaredCommands {
+  return {
+    mcp: declareMcp(program),
+    doctor: declareDoctor(program),
+    printConfig: declarePrintConfig(program),
+    help: declareHelp(program),
+  };
+}
+
+export function buildProgram(version: string, ctx: CliContext, result: { code: number }): Command {
   const program = baseProgram(ctx).version(version, "-v, --version", "output the version number");
-  registerMcp(program, ctx, result);
-  registerDoctor(program, ctx, result);
-  registerPrintConfig(program, ctx);
-  registerHelp(program, ctx, result);
+  const commands = declareCommands(program);
+  registerMcp(commands.mcp, ctx, result);
+  registerDoctor(commands.doctor, ctx, result);
+  registerPrintConfig(commands.printConfig, ctx);
+  registerHelp(commands.help, program, ctx, result);
   return program;
 }
 
@@ -68,16 +93,15 @@ function buildProgram(version: string, ctx: CliContext, result: { code: number }
  * options, argument arity, strict positionals, and output hooks — but with
  * every action, the help option, and the version option removed, so parsing
  * it can only validate argv or report a usage error: it can never act, load
- * configuration, or print help. Program-level options beyond help/version,
- * should any be added later, must be declared here as well to stay validated
- * rather than rejected.
+ * configuration, or print help. It declares its subcommands through the
+ * same declareCommands seam as the real program, so the two trees cannot
+ * drift apart. Program-level options beyond help/version, should any be
+ * added later, must be declared here as well to stay validated rather than
+ * rejected.
  */
-function buildProbe(ctx: CliContext): Command {
+export function buildProbe(ctx: CliContext): Command {
   const probe = baseProgram(ctx).helpOption(false);
-  declareMcp(probe);
-  declareDoctor(probe);
-  declarePrintConfig(probe);
-  declareHelp(probe);
+  declareCommands(probe);
   return probe;
 }
 

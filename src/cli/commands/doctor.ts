@@ -21,11 +21,12 @@ export function declareDoctor(program: Command): Command {
 }
 
 /**
- * Registers the `doctor` subcommand: check local provider configuration and
- * readiness, as a human-readable report or `--json` machine output.
+ * Registers the `doctor` subcommand action on the command declareCommands
+ * produced: check local provider configuration and readiness, as a
+ * human-readable report or `--json` machine output.
  */
-export function registerDoctor(program: Command, ctx: CliContext, result: { code: number }): void {
-  declareDoctor(program).action(async (options: DoctorOptions) => {
+export function registerDoctor(doctor: Command, ctx: CliContext, result: { code: number }): void {
+  doctor.action(async (options: DoctorOptions) => {
       const config = await loadConfig();
       const report = await runDoctor(config);
       if (options.json) {

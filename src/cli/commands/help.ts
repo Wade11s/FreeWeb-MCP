@@ -15,13 +15,16 @@ export function declareHelp(program: Command): Command {
 }
 
 /**
- * Registers the `help` subcommand. Commander's implicit help command routes
- * unknown targets to stderr help output; a local help command keeps help text
- * on stdout and turns unknown targets into a clear stderr diagnostic with
- * exit code 1.
+ * Registers the `help` subcommand action on the command declareCommands
+ * produced. Commander's implicit help command routes unknown targets to
+ * stderr help output; a local help command keeps help text on stdout and
+ * turns unknown targets into a clear stderr diagnostic with exit code 1.
+ * The dispatcher's pre-pass already rejects unknown topics before flags can
+ * mask them; this branch still guards argv like `help -- nope`, where the
+ * topic arrives as a positional after the `--` terminator.
  */
-export function registerHelp(program: Command, ctx: CliContext, result: { code: number }): void {
-  declareHelp(program).action((name?: string) => {
+export function registerHelp(help: Command, program: Command, ctx: CliContext, result: { code: number }): void {
+  help.action((name?: string) => {
       if (name === undefined) {
         program.outputHelp();
         return;
