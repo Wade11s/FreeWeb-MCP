@@ -1,0 +1,20 @@
+import type { Command } from "commander";
+import { loadConfig } from "../../config.js";
+import { runMcpCommand } from "../mcp.js";
+import type { CliContext } from "../main.js";
+
+/**
+ * Registers the `mcp` subcommand: load and validate business configuration,
+ * then run the stdio MCP server until a shutdown signal arrives.
+ */
+export function registerMcp(program: Command, ctx: CliContext, result: { code: number }): void {
+  program
+    .command("mcp")
+    .description("Start the stdio MCP server")
+    .allowExcessArguments(false)
+    .action(async () => {
+      const config = await loadConfig();
+      await runMcpCommand(config, ctx);
+      result.code = 0;
+    });
+}

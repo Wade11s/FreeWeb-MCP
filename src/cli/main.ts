@@ -1,8 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { Command, CommanderError } from "commander";
-import { loadConfig, redactedConfig } from "../config.js";
-import { runDoctor } from "../doctor.js";
-import { runMcpCommand } from "./mcp.js";
+import { registerDoctor } from "./commands/doctor.js";
+import { registerHelp } from "./commands/help.js";
+import { registerMcp } from "./commands/mcp.js";
+import { registerPrintConfig } from "./commands/print-config.js";
+import { text } from "./text.js";
 
 /**
  * Output and process-control seam for the CLI. The executable entry point
@@ -20,10 +22,6 @@ export interface CliContext {
   executablePath: string;
 }
 
-interface DoctorOptions {
-  json: boolean;
-}
-
 /** Reads the package version without loading any business configuration. */
 async function readPackageVersion(): Promise<string> {
   const packageUrl = new URL("../../package.json", import.meta.url);
@@ -32,10 +30,6 @@ async function readPackageVersion(): Promise<string> {
     throw new Error("package.json does not declare a version");
   }
   return parsed.version;
-}
-
-function text(value: string): string {
-  return `${value}\n`;
 }
 
 function buildProgram(version: string, ctx: CliContext, result: { code: number }): Command {
@@ -52,73 +46,10 @@ function buildProgram(version: string, ctx: CliContext, result: { code: number }
     .exitOverride()
     .allowExcessArguments(false);
 
-  program
-    .command("mcp")
-    .description("Start the stdio MCP server")
-    .allowExcessArguments(false)
-    .action(async () => {
-      const config = await loadConfig();
-      await runMcpCommand(config, ctx);
-      result.code = 0;
-    });
-
-  program
-    .command("doctor")
-    .description("Check local provider configuration and readiness")
-    .option("--json", "emit the machine-readable report as JSON on stdout")
-    .allowExcessArguments(false)
-    .action(async (options: DoctorOptions) => {
-      const config = await loadConfig();
-      const report = await runDoctor(config);
-      if (options.json) {
-        ctx.out(text(JSON.stringify(report, null, 2)));
-      } else {
-        for (const check of report.checks) {
-          ctx.out(text(`${check.ok ? "PASS" : check.required ? "FAIL" : "WARN"} ${check.name}: ${check.version ?? check.message ?? ""}`));
-          if (check.warning) ctx.out(text(`  warning: ${check.warning}`));
-        }
-        ctx.out(text(`Configuration: ${JSON.stringify(redactedConfig(config))}`));
-      }
-      result.code = report.ok ? 0 : 1;
-    });
-
-  program
-    .command("print-config")
-    .description("Print an example MCP client configuration")
-    .allowExcessArguments(false)
-    .action(() => {
-      ctx.out(text(JSON.stringify({
-        mcpServers: {
-          freeweb: {
-            command: process.execPath,
-            args: [ctx.executablePath],
-          },
-        },
-      }, null, 2)));
-    });
-
-  // Commander's implicit help command routes unknown targets to stderr help
-  // output; a local help command keeps help text on stdout and turns unknown
-  // targets into a clear stderr diagnostic with exit code 1.
-  program.helpCommand(false);
-  program
-    .command("help")
-    .description("display help for command")
-    .argument("[command]", "command to describe")
-    .allowExcessArguments(false)
-    .action((name?: string) => {
-      if (name === undefined) {
-        program.outputHelp();
-        return;
-      }
-      const target = program.commands.find((command) => command.name() === name);
-      if (!target) {
-        ctx.err(text(`error: unknown help topic '${name}'`));
-        result.code = 1;
-        return;
-      }
-      target.outputHelp();
-    });
+  registerMcp(program, ctx, result);
+  registerDoctor(program, ctx, result);
+  registerPrintConfig(program, ctx);
+  registerHelp(program, ctx, result);
 
   return program;
 }
