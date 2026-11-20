@@ -132,7 +132,7 @@ export function createEgoComponent(deps: EgoComponentDeps = {}): InitComponent {
       ? `skip ego-lite: ${unsupported.message}`
       : detection.installed
         ? "keep the existing ego-browser installation unchanged (no upgrade); wait for your explicit confirmation that GUI onboarding is complete, then verify the command and native Node.js entry"
-        : `after plan confirmation, open the official ego-lite download page (${EGO_DOWNLOAD_URL}); you install the app and complete GUI onboarding, including every browser-data import choice; verification waits for your explicit confirmation; guidance: ${EGO_INSTALL_REFERENCE_URL}`;
+        : `after plan confirmation, ask before opening the official ego-lite download page (${EGO_DOWNLOAD_URL}); declining skips this optional handoff with no browser launch; accepting leaves installation, GUI onboarding, and every browser-data import choice to you; verification waits for a separate explicit confirmation; guidance: ${EGO_INSTALL_REFERENCE_URL}`;
     return [{
       component: "ego" as const,
       action: "handoff" as const,
@@ -182,6 +182,20 @@ export function createEgoComponent(deps: EgoComponentDeps = {}): InitComponent {
     }
 
     if (!input.detection.installed) {
+      // Optional setup must be skippable before any side effect. Unlike the
+      // later onboarding question, a no here returns Skipped and no opener
+      // process is started, matching the TinyFish optional-setup pattern.
+      const openerConfirmed = await input.io.prompt.confirm(
+        `Open the official ego-lite download page (${EGO_DOWNLOAD_URL}) now? Choose no to skip this optional handoff and continue Initialization. [y/N]`,
+      );
+      if (!openerConfirmed) {
+        return {
+          ...base,
+          outcome: "Skipped",
+          warnings: [],
+          detail: `optional ego-lite handoff skipped; no browser was opened, no installation or verification was run, and no configuration was changed. Guidance: ${EGO_INSTALL_REFERENCE_URL}`,
+        };
+      }
       const opener = platform === "darwin"
         ? { command: "open", args: [EGO_DOWNLOAD_URL] }
         : { command: "explorer.exe", args: [EGO_DOWNLOAD_URL] };

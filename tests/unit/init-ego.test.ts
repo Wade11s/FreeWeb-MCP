@@ -53,17 +53,19 @@ function recorder(overrides: Partial<Record<CallKind, Partial<CommandResult>>> =
 function fakeIo(
   answers: readonly boolean[],
   peek?: () => readonly CommandCall[],
-): { io: InitIo; questions: string[] } {
+): { io: InitIo; questions: string[]; callCounts: number[] } {
   const questions: string[] = [];
+  const callCounts: number[] = [];
   let index = 0;
   return {
     questions,
+    callCounts,
     io: {
       prompt: {
         interactive: true,
         confirm: async (question) => {
           questions.push(question);
-          expect(peek?.() ?? []).toEqual([]);
+          callCounts.push((peek?.() ?? []).length);
           return answers[index++] ?? false;
         },
         close: () => {},
@@ -183,10 +185,11 @@ describe("ego-lite init handoff and verification", () => {
   it("waits for onboarding confirmation before checking an existing installation", async () => {
     const { runner, calls } = recorder();
     const component = createEgoComponent({ commandRunner: runner });
-    const { io } = fakeIo([true], () => calls);
+    const { io, callCounts } = fakeIo([true], () => calls);
 
     const result = await component.execute(executeInput(installedDetection(), { io }));
 
+    expect(callCounts).toEqual([0]);
     expect(result.outcome).toBe("Installed");
     expect(result.configPatches).toEqual([{ setting: "ego.binary", value: binary }]);
     expect(calls.map((call) => [call.command, call.args[0]])).toEqual([
@@ -204,11 +207,11 @@ describe("ego-lite init handoff and verification", () => {
     const { runner, calls } = recorder();
     const component = createEgoComponent({ commandRunner: runner });
     const overrides = { FREEWEB_INIT_PLATFORM: "win32" };
-    let callsAtConfirmation: number = -1;
-    const { io, questions } = fakeIo([true]);
+    const { io, questions } = fakeIo([true, true]);
+    const callCounts: number[] = [];
     io.prompt.confirm = async (question) => {
       questions.push(question);
-      callsAtConfirmation = calls.length;
+      callCounts.push(calls.length);
       return true;
     };
 
@@ -216,7 +219,9 @@ describe("ego-lite init handoff and verification", () => {
 
     expect(result.outcome).toBe("Installed");
     expect(calls[0]).toMatchObject({ command: "explorer.exe", args: [EGO_DOWNLOAD_URL] });
-    expect(callsAtConfirmation).toBe(1);
+    expect(callCounts).toEqual([0, 1]);
+    expect(questions[0]).toContain("Open the official ego-lite download page");
+    expect(questions[1]).toContain("Have you installed ego lite");
     expect(result.detail).toContain("on win32");
     expect(calls.some((call) => call.command === "open")).toBe(false);
   });
@@ -229,7 +234,7 @@ describe("ego-lite init handoff and verification", () => {
       const { runner, calls } = recorder();
       const component = createEgoComponent({ commandRunner: runner });
 
-      await component.execute(executeInput({ installed: false, certified: false }));
+      await component.execute(executeInput({ installed: false, certified: false }, { io: fakeIo([true, true]).io }));
 
       expect(calls[0]!.command).toBe("open");
       expect(calls[0]!.env.TINYFISH_API_KEY).toBeUndefined();
@@ -242,7 +247,9 @@ describe("ego-lite init handoff and verification", () => {
   it("records a path discovered after onboarding with the shared config patch contract", async () => {
     const { runner } = recorder();
     const component = createEgoComponent({ commandRunner: runner });
-    const result = await component.execute(executeInput({ installed: false, certified: false }));
+    const result = await component.execute(
+      executeInput({ installed: false, certified: false }, { io: fakeIo([true, true]).io }),
+    );
 
     expect(result.outcome).toBe("Installed");
     expect(result.configPatches).toEqual([{ setting: "ego.binary", value: binary }]);
@@ -303,8 +310,23 @@ describe("ego-lite init handoff and verification", () => {
     expect(questions).toHaveLength(1);
   });
 
+  it("skips the optional handoff with no opener when its consent is declined", async () => {
+    const { runner, calls } = recorder();
+    const component = createEgoComponent({ commandRunner: runner });
+    const { io, questions } = fakeIo([false]);
+
+    const result = await component.execute(executeInput({ installed: false, certified: false }, { io }));
+
+    expect(result.outcome).toBe("Skipped");
+    expect(result.detail).toContain("no browser was opened");
+    expect(result.configPatches).toBeUndefined();
+    expect(questions).toHaveLength(1);
+    expect(questions[0]).toContain("Open the official ego-lite download page");
+    expect(calls).toEqual([]);
+  });
+
   it("reports an installer-launch failure as Failed before asking for onboarding consent", async () => {
-    const { io, questions } = fakeIo([true]);
+    const { io, questions } = fakeIo([true, true]);
     const component = createEgoComponent({
       commandRunner: async () => { throw new Error("simulated open failure"); },
     });
@@ -313,7 +335,8 @@ describe("ego-lite init handoff and verification", () => {
 
     expect(result.outcome).toBe("Failed");
     expect(result.detail).toContain("simulated open failure");
-    expect(questions).toEqual([]);
+    expect(questions).toHaveLength(1);
+    expect(questions[0]).toContain("Open the official ego-lite download page");
   });
 
   it("reports a failed native entry check as Failed after consent", async () => {
