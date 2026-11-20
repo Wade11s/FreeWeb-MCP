@@ -57,6 +57,10 @@ export interface InitDetection {
   readonly warnings?: readonly InitWarning[];
   readonly configPatches?: readonly InitConfigPatch[];
   readonly repairs?: readonly InitConfigRepair[];
+  /** Platform classification a platform-sensitive component resolved during detection. */
+  readonly platform?: string;
+  /** Optional-enhancement note a component resolved during detection. */
+  readonly chromeNote?: string;
 }
 
 /** Timeouts carried from the effective configuration into verification. */

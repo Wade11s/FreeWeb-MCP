@@ -6,7 +6,7 @@ import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../../src/config.js";
 import { runDoctor } from "../../src/doctor.js";
-import { createFirecrawlComponent } from "../../src/init/components/firecrawl.js";
+import { CERTIFIED_FIRECRAWL_VERSION, createFirecrawlComponent } from "../../src/init/components/firecrawl.js";
 import { runInit, type InitDeps } from "../../src/init/command.js";
 import { ConfigStore, nodeInitFilesystem, type InitFilesystem } from "../../src/init/config-store.js";
 import { createPrompt, type InitIo } from "../../src/init/prompt.js";
@@ -326,15 +326,81 @@ describe("init version handling", () => {
     expect(lines).toContain("sigterm");
   });
 
-  it("reports missing Firecrawl as Pending with manual guidance", async () => {
+  it("reports missing Firecrawl prerequisites as Pending with official guidance and no install", async () => {
+    const calls: string[] = [];
+    const component = createFirecrawlComponent({
+      platform: "darwin",
+      commandRunner: async (call) => {
+        calls.push(`${call.command} ${call.args.join(" ")}`);
+        if (call.command === "cargo" && call.args[0] === "--version") throw new Error("spawn cargo ENOENT");
+        return { exitCode: 0, stdout: `${call.command} 1.0.0\n`, stderr: "" };
+      },
+    });
     const fake = fakeIo(["y"]);
-    const code = await runInit(fake.io, deps());
+    const code = await runInit(fake.io, deps({ components: [component] }));
     expect(code).toBe(1);
     expect(fake.out()).toContain("Firecrawl Local: Pending");
+    expect(fake.out()).toContain("https://rustup.rs");
     expect(fake.out()).toContain("docs.firecrawl.dev/quickstarts/firecrawl-local");
-    expect(fake.out()).toContain("Automated installation arrives in a later release");
+    expect(fake.out()).toContain("never installs system package managers");
     expect(fake.out()).toContain("Configuration: Configured");
     expect(((await readConfigFile()).firecrawl as Record<string, unknown>).binary).toBe("firecrawl-local");
+    expect(calls.some((call) => call.startsWith("cargo install"))).toBe(false);
+  });
+});
+
+describe("init Firecrawl automatic installation", () => {
+  it("installs the version-pinned crates.io release on Debian, verifies it, and is idempotent on rerun", async () => {
+    const cargoHome = join(root, "cargo-home");
+    const binary = join(cargoHome, "bin", "firecrawl-local");
+    const commands: string[] = [];
+    const component = createFirecrawlComponent({
+      platform: "linux",
+      readOsRelease: async () => "ID=ubuntu\nID_LIKE=debian",
+      commandRunner: async (call) => {
+        commands.push(`${call.command} ${call.args.join(" ")}`);
+        if (["rustc", "cc"].includes(call.command) || (call.command === "cargo" && call.args[0] === "--version")) {
+          return { exitCode: 0, stdout: `${call.command} 1.0.0\n`, stderr: "" };
+        }
+        if (call.command === "cargo" && call.args[0] === "install") {
+          await mkdir(dirname(binary), { recursive: true });
+          await writeFile(binary, "#!/usr/bin/env node\nconsole.log('firecrawl-local 0.1.0');\n", { mode: 0o755 });
+          await chmod(binary, 0o755);
+          return { exitCode: 0, stdout: "Installed firecrawl-local 0.1.0\n", stderr: "" };
+        }
+        if (call.command === binary && call.args[0] === "--version") {
+          return { exitCode: 0, stdout: "firecrawl-local 0.1.0\n", stderr: "" };
+        }
+        throw new Error(`unexpected command ${call.command} ${call.args.join(" ")}`);
+      },
+      startRuntime: async () => ({
+        baseUrl: "http://127.0.0.1:1",
+        isAlive: () => true,
+        onDead: () => {},
+        request: async () => ({ status: "ok", engine: "firecrawl-local", version: "0.1.0" }),
+        close: async () => {},
+      }),
+    });
+    const first = fakeIo(["y"]);
+    expect(await runInit(first.io, deps({ components: [component], env: baseEnv({ CARGO_HOME: cargoHome }) }))).toBe(0);
+    expect(first.out()).toContain("[required] Firecrawl Local: install firecrawl-local 0.1.0 from crates.io");
+    expect(first.out()).toContain(`cargo install firecrawl-local --version ${CERTIFIED_FIRECRAWL_VERSION}`);
+    expect(first.out()).toContain("Firecrawl Local: Installed");
+    expect(((await readConfigFile()).firecrawl as Record<string, unknown>).binary).toBe(binary);
+    expect(commands.slice(0, 4)).toEqual([
+      "rustc --version",
+      "cargo --version",
+      "cc --version",
+      `cargo install firecrawl-local --version ${CERTIFIED_FIRECRAWL_VERSION}`,
+    ]);
+    expect(commands.some((call) => /(^|\s)(clone|git|login|init|mcp)(\s|$)/.test(call))).toBe(false);
+
+    commands.length = 0;
+    const second = fakeIo(["y"]);
+    expect(await runInit(second.io, deps({ components: [component], env: baseEnv({ CARGO_HOME: cargoHome }) }))).toBe(0);
+    expect(second.out()).toContain("verify the existing installation");
+    expect(second.out()).toContain(`existing installation at ${binary} verified`);
+    expect(commands.some((call) => call.startsWith("cargo install"))).toBe(false);
   });
 });
 
