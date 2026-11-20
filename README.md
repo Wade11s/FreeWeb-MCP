@@ -113,6 +113,14 @@ Exit status: `0` only when Firecrawl and the base configuration are usable and n
 
 Initialization is idempotent: rerun it after an interruption, after a failed run, or after installing a provider manually. This release covers users who already have Firecrawl Local installed; automated Firecrawl installation (#23) and optional TinyFish (#24) and ego-lite (#25) setup arrive in later releases.
 
+### ego-lite handoff (optional)
+
+The optional ego-lite component registered for `init` supersedes the #25 part of the earlier release note. On macOS and Windows it opens the official download page <https://lite.ego.app/> after plan confirmation (`open` on macOS, `explorer.exe` on Windows), then waits for a **separate explicit confirmation** that you installed the app and completed GUI onboarding. Official step-by-step guidance is at <https://github.com/citrolabs/ego-lite/blob/main/skills/ego-browser/references/install.md>. The handoff does not execute the official remote shell installer, remove macOS quarantine attributes, request elevation, upgrade/downgrade/reinstall an existing app, or choose any Browser Profile, cookie, password, session, bookmark, or extension import option. Those choices remain entirely yours.
+
+Only after that confirmation does Initialization check `ego-browser --version` and the native Node.js entry (`ego-browser nodejs -e ...`). Newly resolved absolute paths are recorded through the same configuration-confirmation behavior as other provider paths, including a separate old → new approval for a stale configured path. Incomplete onboarding is `Pending`; an opener or verification failure is `Failed`; unsupported platforms (including Linux) are `Skipped` with an explanation and no opener launch. Optional `Pending`/`Skipped` does not fail the required local baseline, while a selected `Failed` operation does.
+
+Installing the application and passing these probes is **not** configured Browse readiness: Managed Browse still depends on your allowed Profile, GUI onboarding state, and browser-data decisions, and FreeWeb-MCP never imports browser data for you. Routine automated tests use fake openers, fake executables and temporary homes; Windows is simulated only until a Windows live environment is available, and no routine test launches a real installer or GUI.
+
 ## Configuration
 
 The default configuration path is:
