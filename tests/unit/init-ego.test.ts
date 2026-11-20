@@ -111,6 +111,37 @@ describe("ego-lite init detection and plan", () => {
     expect(calls).toEqual([]);
   });
 
+  it("proposes a repair instead of patching a resolvable configured command name", async () => {
+    const { runner, calls } = recorder();
+    const component = createEgoComponent({ commandRunner: runner });
+
+    const detection = await component.detect(env(), { status: "ok", raw: { ego: { binary: "ego-browser" } } });
+
+    expect(detection.source).toBe("config");
+    expect(detection.binary).toBe(binary);
+    expect(detection.configPatches).toBeUndefined();
+    expect(detection.repairs).toEqual([{ component: "ego", setting: "ego.binary", oldValue: "ego-browser", newValue: binary }]);
+    expect(calls).toEqual([]);
+  });
+
+  it("proposes a repair when EGO_BROWSER_BIN overrides a different valid configured path", async () => {
+    const alternate = join(root, "alternate-ego-browser");
+    await writeFile(alternate, "#!/usr/bin/env node\n", { mode: 0o755 });
+    await chmod(alternate, 0o755);
+    const { runner } = recorder();
+    const component = createEgoComponent({ commandRunner: runner });
+
+    const detection = await component.detect(
+      env({ EGO_BROWSER_BIN: binary }),
+      { status: "ok", raw: { ego: { binary: alternate } } },
+    );
+
+    expect(detection.source).toBe("env");
+    expect(detection.binary).toBe(binary);
+    expect(detection.configPatches).toBeUndefined();
+    expect(detection.repairs).toEqual([{ component: "ego", setting: "ego.binary", oldValue: alternate, newValue: binary }]);
+  });
+
   it("plans an official handoff after confirmation and never claims Browse readiness", () => {
     const component = createEgoComponent();
     const items = component.plan({ installed: false, certified: false });
@@ -215,6 +246,33 @@ describe("ego-lite init handoff and verification", () => {
 
     expect(result.outcome).toBe("Installed");
     expect(result.configPatches).toEqual([{ setting: "ego.binary", value: binary }]);
+  });
+
+  it("never rewrites an explicit configured path after a successful verify", async () => {
+    const { runner, calls } = recorder();
+    const component = createEgoComponent({ commandRunner: runner });
+    const detection = installedDetection({ source: "config" });
+
+    const result = await component.execute(executeInput(detection));
+
+    expect(result.outcome).toBe("Installed");
+    expect(result.configPatches).toBeUndefined();
+    expect(calls.map((call) => call.command)).toEqual([binary, binary]);
+  });
+
+  it("verifies the env path but preserves explicit config when its repair is declined", async () => {
+    const { runner, calls } = recorder();
+    const component = createEgoComponent({ commandRunner: runner });
+    const detection = installedDetection({
+      source: "env",
+      repairs: [{ component: "ego", setting: "ego.binary", oldValue: "/configured/ego-browser", newValue: binary }],
+    });
+
+    const result = await component.execute(executeInput(detection));
+
+    expect(result.outcome).toBe("Installed");
+    expect(result.configPatches).toBeUndefined();
+    expect(calls.map((call) => call.command)).toEqual([binary, binary]);
   });
 
   it("uses a confirmed stale-path repair without a duplicate patch", async () => {

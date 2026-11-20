@@ -25,6 +25,16 @@ const KNOWN_PLATFORMS: readonly NodeJS.Platform[] = [
   "aix", "android", "darwin", "freebsd", "haiku", "linux", "openbsd", "sunos", "win32", "cygwin", "netbsd",
 ];
 
+/**
+ * Private detection detail: whether the configuration snapshot already
+ * contained an explicit `ego.binary`. This is deliberately not part of the
+ * generic `InitDetection` contract; the orchestrator only consumes patches
+ * and repairs.
+ */
+interface EgoDetection extends InitDetection {
+  readonly explicitConfiguredBinary?: boolean;
+}
+
 export interface EgoComponentDeps {
   readonly fs?: Pick<InitFilesystem, "access" | "stat">;
   /** Shared bounded command seam; tests inject a recorder or use fake PATH executables. */
@@ -59,22 +69,25 @@ export function createEgoComponent(deps: EgoComponentDeps = {}): InitComponent {
     const configured = classification.status === "ok" ? explicitConfiguredBinary(classification.raw) : undefined;
 
     // Detection contributes configuration declaratively through the shared
-    // patch/repair contract. A new or missing setting gets a patch; an
-    // explicit stale path gets its own confirmed old → new proposal.
-    const contribute = (detection: InitDetection): InitDetection => {
+    // patch/repair contract. A new or missing setting gets a patch; any
+    // resolvable explicit value that differs from the absolute binary path
+    // gets its own confirmed old → new proposal. Explicit values are never
+    // overwritten by a successful verification.
+    const contribute = (detection: InitDetection): EgoDetection => {
       const configPatches = detection.installed && detection.binary && (classification.status !== "ok" || !configured)
         ? [{ setting: "ego.binary", value: detection.binary }]
         : [];
-      const repairs = classification.status === "ok" && detection.staleConfiguredPath && detection.installed && detection.binary
+      const repairs = classification.status === "ok" && configured && detection.installed && detection.binary && configured !== detection.binary
         ? [{
             component: "ego" as const,
             setting: "ego.binary",
-            oldValue: detection.staleConfiguredPath,
+            oldValue: configured,
             newValue: detection.binary,
           }]
         : [];
       return {
         ...detection,
+        ...(configured !== undefined ? { explicitConfiguredBinary: true } : {}),
         ...(configPatches.length > 0 ? { configPatches } : {}),
         ...(repairs.length > 0 ? { repairs } : {}),
       };
@@ -221,16 +234,22 @@ export function createEgoComponent(deps: EgoComponentDeps = {}): InitComponent {
     }
 
     // The orchestrator already handles a confirmed old → new repair patch.
-    // Otherwise a path found after onboarding is recorded via the same shared
-    // configuration-confirmation behavior used by every other component.
+    // Only a binary discovered with no explicit configuration is a new
+    // setting; any explicit path (including one overridden by the environment
+    // or left stale after a declined repair) must stay as the user wrote it
+    // unless its own repair was confirmed.
+    const detection = input.detection as EgoDetection;
+    const pathWasExplicit = detection.source === "config" || detection.explicitConfiguredBinary === true
+      || Boolean(detection.staleConfiguredPath)
+      || (detection.repairs?.some((repair) => repair.setting === "ego.binary") ?? false);
     const repairApplied = input.appliedRepairs.some((repair) => repair.setting === "ego.binary");
-    const alreadyProposed = input.detection.configPatches?.some((patch) => patch.setting === "ego.binary" && patch.value === resolved.binary) ?? false;
+    const alreadyProposed = detection.configPatches?.some((patch) => patch.setting === "ego.binary" && patch.value === resolved.binary) ?? false;
     return {
       ...base,
       outcome: "Installed",
       warnings: [],
       detail: `existing or newly installed ego-browser at ${resolved.binary} verified on ${platform} after your onboarding confirmation (command and native Node.js entry); no upgrade, import, quarantine change, or elevation was performed; Browse use still depends on your GUI choices`,
-      ...(repairApplied || alreadyProposed ? {} : { configPatches: [{ setting: "ego.binary", value: resolved.binary }] }),
+      ...(pathWasExplicit || repairApplied || alreadyProposed ? {} : { configPatches: [{ setting: "ego.binary", value: resolved.binary }] }),
     };
   };
 
@@ -270,6 +289,10 @@ async function resolveAfterOnboarding(
   // PATH fallback; that is the shared stale old → new configuration contract.
   if (input.detection.staleConfiguredPath) return { ok: true, binary: input.detection.staleConfiguredPath };
   if (input.detection.source === "config" && input.detection.binary) return { ok: true, binary: input.detection.binary };
+  // EGO_BROWSER_BIN overrides the file at runtime. Verify the path detection
+  // resolved even when a proposed repair for the explicit file value was
+  // declined; declining must preserve the file, not silently substitute PATH.
+  if (input.detection.source === "env" && input.detection.binary) return { ok: true, binary: input.detection.binary };
   if (input.detection.source === "path" && input.detection.binary) {
     if (await locateBinary(input.detection.binary, input.env, fs)) return { ok: true, binary: input.detection.binary };
   }

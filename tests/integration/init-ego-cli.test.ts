@@ -9,6 +9,7 @@ import {
   EGO_INSTALL_REFERENCE_URL,
   EGO_NATIVE_MARKER,
 } from "../../src/init/components/ego.js";
+import { defaultConfigFile } from "../../src/init/config-store.js";
 
 const cliPath = resolve("dist/cli.js");
 const expectBinary = "/usr/bin/expect";
@@ -88,8 +89,8 @@ process.exit(2);
 `;
 }
 
-async function writeFakeEgo(options: { failNative?: boolean } = {}): Promise<string> {
-  const binary = join(binDir, "ego-browser");
+async function writeFakeEgo(options: { failNative?: boolean } = {}, name = "ego-browser"): Promise<string> {
+  const binary = join(binDir, name);
   await writeFile(binary, egoScriptText(options), { mode: 0o755 });
   await chmod(binary, 0o755);
   return binary;
@@ -196,6 +197,11 @@ async function readConfig(): Promise<Record<string, unknown>> {
   return JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
 }
 
+async function writeCompleteConfig(egoBinary: string): Promise<void> {
+  const config = defaultConfigFile();
+  await writeFile(configPath, JSON.stringify({ ...config, ego: { ...config.ego, binary: egoBinary } }));
+}
+
 describe.skipIf(!hasExpect)("built CLI ego-lite handoff (platforms simulated with fake openers)", () => {
   it("opens the official page after plan confirmation, verifies only after onboarding consent, and records the path", async () => {
     await writeFakeFirecrawl();
@@ -297,6 +303,35 @@ describe.skipIf(!hasExpect)("built CLI ego-lite handoff (platforms simulated wit
     expect(result.output).toContain("Initialization did not complete");
   });
 
+  it("prompts before replacing an explicit configured command name", async () => {
+    const binary = await writeFakeEgo();
+    await writeFakeFirecrawl();
+    await writeCompleteConfig("ego-browser");
+
+    const result = await runCliInPty(["y", "y", "y"]);
+
+    expect(result.status).toBe(0);
+    expect(result.output).toContain(`ego.binary: ego-browser -> ${binary}`);
+    expect(result.output).toContain(`Update ego.binary from ego-browser to ${binary}`);
+    expect(result.output).not.toContain("no content changes will be made");
+    expect(((await readConfig()).ego as Record<string, unknown>).binary).toBe(binary);
+  });
+
+  it("prompts before an EGO_BROWSER_BIN override replaces a different valid configured path", async () => {
+    const configured = await writeFakeEgo({}, "configured-ego-browser");
+    const envBinary = await writeFakeEgo();
+    await writeFakeFirecrawl();
+    await writeCompleteConfig(configured);
+
+    const result = await runCliInPty(["y", "y", "y"], { EGO_BROWSER_BIN: envBinary });
+
+    expect(result.status).toBe(0);
+    expect(result.output).toContain(`ego.binary: ${configured} -> ${envBinary}`);
+    expect(result.output).toContain(`Update ego.binary from ${configured} to ${envBinary}`);
+    expect(result.output).toContain("every explicit value is preserved");
+    expect(((await readConfig()).ego as Record<string, unknown>).binary).toBe(envBinary);
+  });
+
   it("recovers on rerun after incomplete onboarding without reopening the page", async () => {
     await writeFakeFirecrawl();
     await writeOpeners();
@@ -305,9 +340,10 @@ describe.skipIf(!hasExpect)("built CLI ego-lite handoff (platforms simulated wit
     expect(((await readConfig()).ego as Record<string, unknown>).binary).toBe("ego-browser");
 
     await writeFakeEgo();
-    const second = await runCliInPty(["y", "y"]);
+    const second = await runCliInPty(["y", "y", "y"]);
 
     expect(second.status).toBe(0);
+    expect(second.output).toContain(`Update ego.binary from ego-browser to ${join(binDir, "ego-browser")}`);
     expect(second.output).toContain("ego-lite: Installed");
     expect(((await readConfig()).ego as Record<string, unknown>).binary).toBe(join(binDir, "ego-browser"));
     expect(await readLog(openerLog)).toEqual([`open|["${EGO_DOWNLOAD_URL}"]`]);
