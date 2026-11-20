@@ -109,7 +109,14 @@ class LabelLifecycleRunner implements EgoRunner {
   }
 
   private errorResult(request: EgoRunRequest, code: string, message: string, details: Record<string, unknown>): EgoRunResult {
-    return egoResult(request, { ok: false, error: { name: "Error", message, code, details } });
+    const labels = this.pageOrder();
+    return egoResult(request, {
+      ok: false,
+      error: { name: "Error", message, code, details },
+      task: { spaceId: 7, ownership: "agent", name: "freeweb task" },
+      pages: labels,
+      pageOrder: labels,
+    });
   }
 
   async run(request: EgoRunRequest): Promise<EgoRunResult> {
@@ -1654,6 +1661,56 @@ describe("EgoProvider Page label resolution", () => {
       tasks: Record<string, { pageOrder?: string[] }>;
     };
     expect(after.tasks[browseId]!.pageOrder).toEqual(["p2"]);
+  });
+
+  it("persists restored labels on a failed exact-label check so a retry succeeds", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new LabelLifecycleRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openWithTabs(dataDir, provider, runner, [
+      { label: "p1", url: "https://page.test/p1", title: "Page 1" },
+      { label: "p2", url: "https://page.test/p2", title: "Page 2" },
+    ]);
+    const registryPath = join(dataDir, "browse", "tasks.json");
+    const legacy = JSON.parse(await readFile(registryPath, "utf8")) as {
+      tasks: Record<string, { pages: string[]; pageOrder?: string[] }>;
+    };
+    legacy.tasks[browseId]!.pages = ["p3"];
+    delete legacy.tasks[browseId]!.pageOrder;
+    await writeFile(registryPath, JSON.stringify(legacy));
+
+    await expect(provider.browse({
+      action: "call",
+      browseId,
+      page: "p3",
+      method: "page.snapshot",
+      args: [],
+    })).rejects.toMatchObject({
+      code: "EGO_PAGE_NOT_FOUND",
+      options: {
+        details: {
+          error: { details: { requestedPage: "p3", availablePages: ["p1", "p2"] } },
+        },
+      },
+    });
+
+    const persisted = JSON.parse(await readFile(registryPath, "utf8")) as {
+      tasks: Record<string, { pages: string[]; pageOrder?: string[]; ownership: string }>;
+    };
+    expect(persisted.tasks[browseId]).toMatchObject({
+      pages: ["p1", "p2"],
+      pageOrder: ["p1", "p2"],
+      ownership: "agent",
+    });
+
+    const retry = await provider.browse({
+      action: "call",
+      browseId,
+      page: "p1",
+      method: "page.snapshot",
+      args: [],
+    });
+    expect(retry).toMatchObject({ status: "ok", pages: ["p1"] });
   });
 
   it("still rejects a genuinely missing label after a kept non-p1 round", async () => {

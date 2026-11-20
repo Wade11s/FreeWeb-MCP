@@ -553,6 +553,9 @@ ${pageGuard}${options.operationCode}
     ? { spaceId: task.spaceId ?? RESOLVED_ID, name: task.name, ownership: task.ownership }
     : null;
   const spacesAfter = await listTaskSpaces().catch(() => undefined);
+  // A failure may happen after claim/adopt. Report and persist the labels that really
+  // exist so the exact-label error is actionable and the next call can resolve them.
+  const restoredPages = task ? managedPageOrder(await task.tabs().catch(() => [])) : [];
   await emitEgoResult({
     ok: false,
     error: serializeEgoError(error),
@@ -562,7 +565,8 @@ ${pageGuard}${options.operationCode}
     created: failedTask !== null || (Array.isArray(spacesAfter)
       ? spacesAfter.some((space) => space.name === SPACE_NAME)
       : null),
-    pages: [],
+    pages: restoredPages,
+    pageOrder: restoredPages,
     spaces: Array.isArray(spacesAfter) ? spacesAfter : [],
   });
 }
@@ -1105,7 +1109,13 @@ export class EgoProvider {
       kind: "managed",
       requiresPage: plan.spec.target !== "task",
     });
-    if (payload.ok === false) throw payloadError(payload);
+    if (payload.ok === false) {
+      // Claim/adopt already happened in the runtime. Persist the restored labels before
+      // surfacing the exact-label error so a retry resolves the same Page labels.
+      this.updateRecord(task, payload);
+      await this.writeRegistry(registry);
+      throw payloadError(payload);
+    }
     this.updateRecord(task, payload);
     const keep = this.requiredKeep(input.page, payload);
     const warnings = await this.finishAndUpdate(registry, task, keep);
@@ -1212,6 +1222,9 @@ egoCallValue = await page.evaluate(expression);`,
       kind: "evaluate",
     });
     if (payload.ok === false) {
+      // Persist labels restored by claim/adopt before returning the Page Evaluation error.
+      this.updateRecord(task, payload);
+      await this.writeRegistry(registry);
       return {
         browseId: task.browseId,
         ...this.spaceIdFields(task),
