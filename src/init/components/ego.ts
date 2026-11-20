@@ -20,6 +20,7 @@ export const EGO_NATIVE_MARKER = "freeweb-mcp-ego-ready";
 
 const DEFAULT_BINARY_NAME = "ego-browser";
 const COMMAND_TIMEOUT_MS = 10_000;
+const TEST_MODE_FLAG = "FREEWEB_INIT_TEST_MODE";
 const SUPPORTED_PLATFORMS: readonly NodeJS.Platform[] = ["darwin", "win32"];
 const KNOWN_PLATFORMS: readonly NodeJS.Platform[] = [
   "aix", "android", "darwin", "freebsd", "haiku", "linux", "openbsd", "sunos", "win32", "cygwin", "netbsd",
@@ -41,7 +42,9 @@ export interface EgoComponentDeps {
   readonly commandRunner?: CommandRunner;
   /**
    * Explicit platform override for simulated platform branches. Production
-   * uses `process.platform`; built-CLI tests may set FREEWEB_INIT_PLATFORM.
+   * uses `process.platform`; FREEWEB_INIT_PLATFORM is honored only when
+   * FREEWEB_INIT_TEST_MODE=1, so a leaked test value cannot skip ego or pick
+   * `explorer.exe` on macOS.
    */
   readonly platform?: NodeJS.Platform;
 }
@@ -321,6 +324,9 @@ async function resolveAfterOnboarding(
 
 function platformFor(env: NodeJS.ProcessEnv, override?: NodeJS.Platform): NodeJS.Platform {
   if (override) return override;
+  // Test-only platform simulation: an explicit flag is required in addition
+  // to FREEWEB_INIT_PLATFORM. Production must never honor a leaked value.
+  if (env[TEST_MODE_FLAG] !== "1") return process.platform;
   const simulated = KNOWN_PLATFORMS.find((platform) => platform === env.FREEWEB_INIT_PLATFORM);
   return simulated ?? process.platform;
 }

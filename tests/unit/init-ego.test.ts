@@ -84,6 +84,10 @@ function env(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
   return { PATH: [root, dirname(process.execPath), "/usr/bin", "/bin"].join(delimiter), HOME: root, ...overrides };
 }
 
+function simulatedPlatform(platform: string): Record<string, string> {
+  return { FREEWEB_INIT_TEST_MODE: "1", FREEWEB_INIT_PLATFORM: platform };
+}
+
 function executeInput(
   detection: InitDetection,
   options: { io?: InitIo; overrides?: Record<string, string>; repairs?: InitDetection["repairs"] } = {},
@@ -155,16 +159,36 @@ describe("ego-lite init detection and plan", () => {
     expect(items[0]!.description).not.toMatch(/ready|configured/i);
   });
 
+  it("ignores a leaked FREEWEB_INIT_PLATFORM unless test mode is explicitly enabled", async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", {
+      value: "darwin",
+      configurable: true,
+      enumerable: descriptor.enumerable,
+      writable: descriptor.writable,
+    });
+    try {
+      const { runner } = recorder();
+      const component = createEgoComponent({ commandRunner: runner });
+      const detection = await component.detect(env({ FREEWEB_INIT_PLATFORM: "linux" }), { status: "absent" });
+
+      expect(detection.warnings).toBeUndefined();
+      expect(component.plan(detection)[0]!.description).not.toContain("linux");
+    } finally {
+      Object.defineProperty(process, "platform", descriptor);
+    }
+  });
+
   it("reports unsupported platforms as Skipped with an explanation and no installer", async () => {
     const { runner, calls } = recorder();
     const component = createEgoComponent({ commandRunner: runner });
-    const detection = await component.detect(env({ FREEWEB_INIT_PLATFORM: "linux" }), { status: "absent" });
+    const detection = await component.detect(env(simulatedPlatform("linux")), { status: "absent" });
     expect(detection.warnings?.[0]?.code).toBe("EgoPlatformUnsupported");
     expect(component.plan(detection)[0]!.description).toContain("linux");
 
     const prompts: string[] = [];
     const result = await component.execute({
-      ...executeInput(detection, { overrides: { FREEWEB_INIT_PLATFORM: "linux" } }),
+      ...executeInput(detection, { overrides: simulatedPlatform("linux") }),
       io: {
         prompt: { interactive: true, confirm: async (question) => { prompts.push(question); return true; }, close: () => {} },
         writeLine: () => {},
@@ -206,7 +230,7 @@ describe("ego-lite init handoff and verification", () => {
   it("opens the exact official URL through explorer.exe in a simulated Windows flow", async () => {
     const { runner, calls } = recorder();
     const component = createEgoComponent({ commandRunner: runner });
-    const overrides = { FREEWEB_INIT_PLATFORM: "win32" };
+    const overrides = simulatedPlatform("win32");
     const { io, questions } = fakeIo([true, true]);
     const callCounts: number[] = [];
     io.prompt.confirm = async (question) => {

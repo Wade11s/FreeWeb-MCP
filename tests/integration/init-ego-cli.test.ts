@@ -12,6 +12,7 @@ import {
 import { defaultConfigFile } from "../../src/init/config-store.js";
 
 const cliPath = resolve("dist/cli.js");
+const PLATFORM_SIMULATION = { FREEWEB_INIT_TEST_MODE: "1" };
 const expectBinary = "/usr/bin/expect";
 const hasExpect = existsSync(expectBinary);
 
@@ -228,7 +229,7 @@ describe.skipIf(!hasExpect)("built CLI ego-lite handoff (platforms simulated wit
     await writeFakeFirecrawl();
     await writeOpeners({ installEgo: true });
 
-    const result = await runCliInPty(["y", "y", "y"], { FREEWEB_INIT_PLATFORM: "win32" });
+    const result = await runCliInPty(["y", "y", "y"], { ...PLATFORM_SIMULATION, FREEWEB_INIT_PLATFORM: "win32" });
 
     expect(result.status).toBe(0);
     expect(result.output).toContain("on win32");
@@ -240,7 +241,7 @@ describe.skipIf(!hasExpect)("built CLI ego-lite handoff (platforms simulated wit
     await writeFakeFirecrawl();
     await writeOpeners({ installEgo: true });
 
-    const result = await runCliInPty(["y"], { FREEWEB_INIT_PLATFORM: "linux" });
+    const result = await runCliInPty(["y"], { ...PLATFORM_SIMULATION, FREEWEB_INIT_PLATFORM: "linux" });
 
     expect(result.status).toBe(0);
     expect(result.output).toContain("ego-lite: Skipped");
