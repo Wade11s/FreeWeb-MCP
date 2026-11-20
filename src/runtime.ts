@@ -82,7 +82,10 @@ export class FreeWebRuntime implements FreeWebToolHandlers {
   }
 
   async map(input: MapInput) {
-    await assertPublicHttpUrl(input.url, { allowPrivate: this.config.firecrawl.allowPrivate });
+    await assertPublicHttpUrl(input.url, {
+      allowPrivate: this.config.firecrawl.allowPrivate,
+      trustedDnsServers: this.config.network.trustedDnsServers,
+    });
     return this.router.map(input);
   }
 
