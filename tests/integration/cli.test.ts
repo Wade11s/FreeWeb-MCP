@@ -110,7 +110,7 @@ describe("built CLI surface", () => {
     expect(result.stderr).toBe("");
     const printed = JSON.parse(result.stdout);
     expect(printed.mcpServers.freeweb.command).toBe(process.execPath);
-    expect(printed.mcpServers.freeweb.args).toEqual([cliPath]);
+    expect(printed.mcpServers.freeweb.args).toEqual([cliPath, "mcp"]);
   });
 
   it("fails unknown commands and unknown options on stderr with exit code 1", () => {

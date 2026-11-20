@@ -4,7 +4,9 @@ import { text } from "../text.js";
 
 /**
  * Registers the `print-config` subcommand: print an example MCP client
- * configuration for this executable. Business configuration is never loaded.
+ * configuration that starts this executable with the explicit `mcp`
+ * subcommand, so a client configured from the output speaks JSON-RPC.
+ * Business configuration is never loaded.
  */
 export function registerPrintConfig(program: Command, ctx: CliContext): void {
   program
@@ -16,7 +18,7 @@ export function registerPrintConfig(program: Command, ctx: CliContext): void {
         mcpServers: {
           freeweb: {
             command: process.execPath,
-            args: [ctx.executablePath],
+            args: [ctx.executablePath, "mcp"],
           },
         },
       }, null, 2)));

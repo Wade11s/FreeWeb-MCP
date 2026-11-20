@@ -128,7 +128,7 @@ When the package is installed, the client only needs the executable, which must 
 }
 ```
 
-`node dist/cli.js print-config` prints an example local configuration. In MCP mode, stdout is reserved for JSON-RPC; startup and shutdown diagnostics go to stderr.
+`node dist/cli.js print-config` prints the checkout example above (Node executable plus the explicit `mcp` subcommand). In MCP mode, stdout is reserved for JSON-RPC; startup and shutdown diagnostics go to stderr.
 
 Restart the MCP client after changing tool-registration settings such as `ego.unrestricted`.
 
