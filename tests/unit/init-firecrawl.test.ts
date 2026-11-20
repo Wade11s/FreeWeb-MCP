@@ -134,4 +134,26 @@ describe("Firecrawl certified version classification", () => {
       expect(result.warnings.some((warning) => warning.code === "Uncertified"), testCase.reported).toBe(!testCase.certified);
     }
   });
+
+  it("does not label a missing binary Uncertified when no version string was produced", async () => {
+    const component = createFirecrawlComponent({
+      commandRunner: async () => {
+        throw new Error("spawn /missing/firecrawl-local ENOENT");
+      },
+      startRuntime: async () => {
+        throw new Error("spawn /missing/firecrawl-local ENOENT");
+      },
+    });
+
+    const result = await component.execute({
+      io,
+      env: {},
+      detection: detection("/missing/firecrawl-local"),
+      appliedRepairs: [],
+    });
+
+    expect(result.outcome).toBe("Failed");
+    expect(result.detail).toContain("ENOENT");
+    expect(result.warnings).toEqual([]);
+  });
 });

@@ -173,12 +173,10 @@ export function createFirecrawlComponent(deps: FirecrawlComponentDeps = {}): Ini
     }).catch(() => undefined);
     const version = probe && probe.exitCode === 0 && !probe.timedOut ? firstLine(probe.stdout + probe.stderr) : undefined;
     const warnings: InitWarning[] = [];
-    if (!isCertifiedVersion(version)) {
+    if (version && !isCertifiedVersion(version)) {
       warnings.push({
         code: "Uncertified",
-        message: version
-          ? `Firecrawl Local reports '${version}', which is not the certified ${CERTIFIED_FIRECRAWL_VERSION} release; the existing installation was left untouched`
-          : "the Firecrawl Local version could not be determined; the existing installation was left untouched and is not certified",
+        message: `Firecrawl Local reports '${version}', which is not the certified ${CERTIFIED_FIRECRAWL_VERSION} release; the existing installation was left untouched`,
       });
     }
     const verification = await verify({ binary, timeouts: input.timeouts });
