@@ -61,6 +61,8 @@ export interface InitDetection {
   readonly platform?: string;
   /** Optional-enhancement note a component resolved during detection. */
   readonly chromeNote?: string;
+  /** Component-specific verification timeouts resolved from the configuration snapshot. */
+  readonly timeouts?: InitTimeouts;
 }
 
 /** Timeouts carried from the effective configuration into verification. */
@@ -107,6 +109,8 @@ export interface InitExecuteInput {
 export interface InitComponent {
   readonly id: InitComponentId;
   readonly label: string;
+  /** Fixed public text that the central redactor must preserve verbatim. */
+  readonly publicPhrases?: readonly string[];
   /** Required components gate the run's exit status. */
   readonly required: boolean;
   detect(env: NodeJS.ProcessEnv, classification: ConfigClassification): Promise<InitDetection>;

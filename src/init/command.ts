@@ -4,7 +4,7 @@ import { defaultConfigPath, loadConfig, type AppConfig } from "../config.js";
 import { runDoctor, type DoctorCheck } from "../doctor.js";
 import { readPackageMetadata } from "../package-metadata.js";
 import { registeredInitComponents } from "./components/registry.js";
-import type { InitComponent, InitConfigPatch, InitConfigRepair, InitConfigValue, InitDetection, InitTimeouts } from "./component.js";
+import type { InitComponent, InitConfigPatch, InitConfigRepair, InitConfigValue, InitDetection } from "./component.js";
 import {
   ConfigStore,
   completeExistingConfig,
@@ -16,7 +16,7 @@ import {
 import { initRunSummary, type InitComponentId, type InitComponentResult, type InitWarning } from "./outcomes.js";
 import { buildInitPlan, type InitPlanItem } from "./plan.js";
 import type { InitIo } from "./prompt.js";
-import { redactTinyFishInitIo as redactInitIo } from "./components/tinyfish.js";
+import { redactInitIo } from "./redaction.js";
 import { containsEnvironmentCredential } from "./secrets.js";
 
 export interface InitDeps {
@@ -45,14 +45,14 @@ export function defaultInitDeps(env: NodeJS.ProcessEnv = process.env): InitDeps 
 }
 
 const CONFIGURATION_LABEL = "Configuration";
-const DEFAULT_TIMEOUTS: InitTimeouts = { startupTimeoutMs: 30_000, shutdownTimeoutMs: 5_000 };
 
 /**
  * Final init error boundary. Component exceptions are rendered through the
  * same redactor as ordinary output, so they never reach runCli unredacted.
  */
 export async function runInit(io: InitIo, deps: InitDeps): Promise<number> {
-  const redactedIo = redactInitIo(io, deps.env);
+  const publicPhrases = deps.components.flatMap((component) => component.publicPhrases ?? []);
+  const redactedIo = redactInitIo(io, deps.env, publicPhrases);
   try {
     return await runInitCore(redactedIo, deps);
   } catch (error) {
@@ -155,7 +155,7 @@ async function runInitCore(io: InitIo, deps: InitDeps): Promise<number> {
       env: deps.env,
       detection,
       appliedRepairs: appliedRepairs.filter((repair) => repair.component === component.id),
-      timeouts: effectiveTimeouts(classification),
+      timeouts: detection.timeouts,
     }));
   }
 
@@ -185,13 +185,20 @@ async function runInitCore(io: InitIo, deps: InitDeps): Promise<number> {
     io.errorLine(`Doctor could not run: ${error instanceof Error ? error.message : String(error)}`);
   }
 
-  const summary = initRunSummary(results);
+  const expectedRequiredResults = deps.components.filter((component) => component.required).length + 1;
+  const summary = initRunSummary(results, expectedRequiredResults);
   io.writeLine("Initialization summary:");
   for (const result of results) {
     io.writeLine(`  ${result.label}: ${result.outcome}${result.detail ? ` - ${result.detail}` : ""}`);
     for (const warning of result.warnings) {
       io.writeLine(`    warning [${warning.code}]: ${warning.message}`);
     }
+  }
+  if (summary.exitCode === 0 && !doctorFailed) {
+    io.writeLine("Result: Initialization command succeeded; Firecrawl and the base configuration are usable and no selected operation failed.");
+    io.writeLine("This command success does not mean every optional capability is ready; use the optional outcomes above and their human-step details.");
+  } else {
+    io.writeLine("Result: Initialization command did not complete successfully; address the failed or required pending items above.");
   }
   io.writeLine("Next steps:");
   io.writeLine("  - To register FreeWeb-MCP with an MCP client, run `freeweb-mcp print-config`; init never reads or writes other clients' configurations.");
@@ -303,19 +310,6 @@ function plannedDataDir(env: NodeJS.ProcessEnv, classification: ConfigClassifica
   if (classification.status === "ok" && typeof classification.raw.dataDir === "string") return classification.raw.dataDir;
   return join(homedir(), ".freeweb-mcp");
 }
-
-function effectiveTimeouts(classification: ConfigClassification): InitTimeouts | undefined {
-  if (classification.status !== "ok" || !isRecord(classification.raw.firecrawl)) return undefined;
-  const record = classification.raw.firecrawl as Record<string, unknown>;
-  const startup = typeof record.startupTimeoutMs === "number" ? record.startupTimeoutMs : undefined;
-  const shutdown = typeof record.shutdownTimeoutMs === "number" ? record.shutdownTimeoutMs : undefined;
-  if (startup === undefined && shutdown === undefined) return undefined;
-  return {
-    startupTimeoutMs: startup ?? DEFAULT_TIMEOUTS.startupTimeoutMs,
-    shutdownTimeoutMs: shutdown ?? DEFAULT_TIMEOUTS.shutdownTimeoutMs,
-  };
-}
-
 function failedConfiguration(message: string): InitComponentResult {
   return {
     component: "configuration",
@@ -326,8 +320,4 @@ function failedConfiguration(message: string): InitComponentResult {
     warnings: [],
     detail: message,
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

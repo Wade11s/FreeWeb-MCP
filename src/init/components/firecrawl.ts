@@ -9,7 +9,7 @@ import {
   type FirecrawlConfig,
   type FirecrawlRuntime,
 } from "../../providers/firecrawl-process.js";
-import type { InitComponent, InitDetection, InitExecuteInput, InitVerifyInput } from "../component.js";
+import type { InitComponent, InitDetection, InitExecuteInput, InitTimeouts, InitVerifyInput } from "../component.js";
 import { nodeInitFilesystem, type ConfigClassification, type InitFilesystem } from "../config-store.js";
 import type { InitComponentResult, InitWarning } from "../outcomes.js";
 import type { InitPlanItem } from "../plan.js";
@@ -29,6 +29,8 @@ const PREREQUISITE_PROBE_TIMEOUT_MS = 10_000;
  * guarantee interruption cleanup, not to make a real build look fast.
  */
 const INSTALL_TIMEOUT_MS = 30 * 60_000;
+const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
+const DEFAULT_SHUTDOWN_TIMEOUT_MS = 5_000;
 const LOCAL_QUICKSTART = "https://docs.firecrawl.dev/quickstarts/firecrawl-local";
 const RUST_GUIDANCE = "install Rust and Cargo with the official rustup installer from https://rustup.rs, then rerun init";
 
@@ -97,6 +99,7 @@ export function createFirecrawlComponent(deps: FirecrawlComponentDeps = {}): Ini
         ...(detection.notes ?? []),
         ...(platformNote ? [platformNote] : []),
       ];
+      const timeouts = configuredTimeouts(classification);
       const configPatches = detection.installed && detection.binary && (classification.status !== "ok" || !configured)
         ? [{ setting: "firecrawl.binary", value: detection.binary }]
         : [];
@@ -115,6 +118,7 @@ export function createFirecrawlComponent(deps: FirecrawlComponentDeps = {}): Ini
         ...(notes.length > 0 ? { notes } : {}),
         ...(configPatches.length > 0 ? { configPatches } : {}),
         ...(repairs.length > 0 ? { repairs } : {}),
+        ...(timeouts ? { timeouts } : {}),
       };
     };
 
@@ -186,8 +190,8 @@ export function createFirecrawlComponent(deps: FirecrawlComponentDeps = {}): Ini
       port: 0,
       allowPrivate: false,
       searchFallback: false,
-      startupTimeoutMs: input.timeouts?.startupTimeoutMs ?? 30_000,
-      shutdownTimeoutMs: input.timeouts?.shutdownTimeoutMs ?? 5_000,
+      startupTimeoutMs: input.timeouts?.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS,
+      shutdownTimeoutMs: input.timeouts?.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS,
     };
     let runtime: FirecrawlRuntime;
     try {
@@ -540,6 +544,19 @@ function explicitConfiguredBinary(raw: Record<string, unknown>): string | undefi
   if (!isRecord(firecrawl)) return undefined;
   const binary = firecrawl.binary;
   return typeof binary === "string" && binary ? binary : undefined;
+}
+
+/** Resolves verification timing inside the component, not in the orchestrator. */
+function configuredTimeouts(classification: ConfigClassification): InitTimeouts | undefined {
+  if (classification.status !== "ok" || !isRecord(classification.raw.firecrawl)) return undefined;
+  const record = classification.raw.firecrawl;
+  const startup = typeof record.startupTimeoutMs === "number" ? record.startupTimeoutMs : undefined;
+  const shutdown = typeof record.shutdownTimeoutMs === "number" ? record.shutdownTimeoutMs : undefined;
+  if (startup === undefined && shutdown === undefined) return undefined;
+  return {
+    startupTimeoutMs: startup ?? DEFAULT_STARTUP_TIMEOUT_MS,
+    shutdownTimeoutMs: shutdown ?? DEFAULT_SHUTDOWN_TIMEOUT_MS,
+  };
 }
 
 function firstLine(text: string): string | undefined {

@@ -2,7 +2,6 @@ import type { InitComponent, InitConfigPatch, InitDetection, InitExecuteInput } 
 import type { ConfigClassification } from "../config-store.js";
 import type { InitComponentResult } from "../outcomes.js";
 import type { InitPlanItem } from "../plan.js";
-import type { InitIo } from "../prompt.js";
 import { redactInitText } from "../redaction.js";
 
 /**
@@ -14,26 +13,6 @@ export const TINYFISH_FREE_ATTESTATION = "This TinyFish API key belongs to an ac
 
 const MANUAL_ENVIRONMENT_STEP = "Set TINYFISH_API_KEY in the environment of the process that runs FreeWeb-MCP, then rerun init; Initialization never collects, prints, or persists its value.";
 const NO_REQUESTS = "No TinyFish CLI, SDK, wallet, Search, Fetch, or other paid-risk request was made.";
-
-/**
- * Keeps the fixed, public attestation intact without disabling credential
- * redaction for any surrounding component-controlled text.
- */
-export function redactTinyFishInitIo(io: InitIo, env: NodeJS.ProcessEnv): InitIo {
-  const redact = (text: string): string => text
-    .split(TINYFISH_FREE_ATTESTATION)
-    .map((part) => redactInitText(part, env))
-    .join(TINYFISH_FREE_ATTESTATION);
-  return {
-    prompt: {
-      interactive: io.prompt.interactive,
-      confirm: (question) => io.prompt.confirm(redact(question)),
-      close: () => io.prompt.close(),
-    },
-    writeLine: (line) => io.writeLine(redact(line)),
-    errorLine: (line) => io.errorLine(redact(line)),
-  };
-}
 
 interface TinyFishDetection extends InitDetection {
   /** Presence only: the credential value is never copied into detection state. */
@@ -125,7 +104,16 @@ export function createTinyFishComponent(): InitComponent {
     }
   };
 
-  return { id: "tinyfish", label: "TinyFish Search/Fetch", required: false, detect, plan, verify, execute };
+  return {
+    id: "tinyfish",
+    label: "TinyFish Search/Fetch",
+    publicPhrases: [TINYFISH_FREE_ATTESTATION],
+    required: false,
+    detect,
+    plan,
+    verify,
+    execute,
+  };
 }
 
 type TinyFishResultBase = Pick<InitComponentResult, "component" | "label" | "required" | "selected">;

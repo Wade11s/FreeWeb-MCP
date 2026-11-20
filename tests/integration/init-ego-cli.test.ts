@@ -142,7 +142,12 @@ interface PtyResult {
  * `surplusAnswer` so a test that only cares about one component is not left
  * hanging when another optional component starts asking questions.
  */
-function runCliInPty(answers: readonly string[], overrides: Record<string, string> = {}, surplusAnswer = "n"): Promise<PtyResult> {
+function runCliInPty(
+  answers: readonly string[],
+  overrides: Record<string, string> = {},
+  surplusAnswer = "n",
+  tinyFishAnswer = "n",
+): Promise<PtyResult> {
   const script = join(root, "drive.exp");
   const program = [
     "set timeout 60",
@@ -173,7 +178,7 @@ function runCliInPty(answers: readonly string[], overrides: Record<string, strin
   ].join("\n");
   return new Promise<PtyResult>((resolveRun, rejectRun) => {
     void writeFile(script, program).then(() => {
-      const child = spawn(expectBinary, [script, answers.join(" "), "n", surplusAnswer, process.execPath, cliPath, "init"], {
+      const child = spawn(expectBinary, [script, answers.join(" "), tinyFishAnswer, surplusAnswer, process.execPath, cliPath, "init"], {
         stdio: ["ignore", "pipe", "pipe"],
         timeout: 60_000,
         env: cliEnv(overrides),
@@ -222,6 +227,59 @@ async function writeCompleteConfig(egoBinary: string): Promise<void> {
   const config = defaultConfigFile();
   await writeFile(configPath, JSON.stringify({ ...config, ego: { ...config.ego, binary: egoBinary } }));
 }
+
+describe.skipIf(!hasExpect)("built CLI all-component initialization baselines", () => {
+  it("accepts every default-selected optional component and reruns without duplicate installation side effects", async () => {
+    await writeFakeFirecrawl();
+    await writeOpeners({ installEgo: true });
+
+    const first = await runCliInPty(["y", "y", "y"], {}, "n", "y");
+
+    expect(first.status).toBe(0);
+    expect(first.promptCount).toBe(5);
+    expect(first.output).toContain("Firecrawl Local: Installed");
+    expect(first.output).toContain("TinyFish Search/Fetch: Configured");
+    expect(first.output).toContain("ego-lite: Installed");
+    expect(first.output).toContain("Configuration: Configured");
+    expect(first.output).toContain("Result: Initialization command succeeded");
+    expect(first.output).toContain("does not mean every optional capability is ready");
+    expect(first.output).toContain("freeweb-mcp print-config");
+    expect(await readLog(openerLog)).toEqual([`open|["${EGO_DOWNLOAD_URL}"]`]);
+    expect(((await readConfig()).tinyfish as Record<string, unknown>).freeOnlyConfirmed).toBe(true);
+    expect(((await readConfig()).ego as Record<string, unknown>).binary).toBe(join(binDir, "ego-browser"));
+
+    const content = await readFile(configPath, "utf8");
+    const second = await runCliInPty(["y", "y"], {}, "n", "y");
+    expect(second.status).toBe(0);
+    expect(second.promptCount).toBe(2);
+    expect(second.output).toContain("no content changes were made");
+    expect(second.output).not.toContain("Open the official ego-lite download page");
+    expect(await readFile(configPath, "utf8")).toBe(content);
+    expect(await readLog(openerLog)).toEqual([`open|["${EGO_DOWNLOAD_URL}"]`]);
+  });
+
+  it("declines every optional component while retaining a successful required baseline", async () => {
+    await writeFakeFirecrawl();
+    await writeOpeners({ installEgo: true });
+
+    const result = await runCliInPty(["y", "n"]);
+
+    expect(result.status).toBe(0);
+    expect(result.promptCount).toBe(3);
+    expect(result.output).toContain("Firecrawl Local: Installed");
+    expect(result.output).toContain("TinyFish Search/Fetch: Skipped");
+    expect(result.output).toContain("ego-lite: Skipped");
+    expect(result.output).toContain("Configuration: Configured");
+    expect(result.output).toContain("Result: Initialization command succeeded");
+    expect(result.output).toContain("does not mean every optional capability is ready");
+    expect(await readLog(openerLog)).toEqual([]);
+    expect(await readLog(egoLog)).toEqual([]);
+    const config = await readConfig();
+    expect((config.tinyfish as Record<string, unknown>).freeOnlyConfirmed).toBe(false);
+    expect((config.firecrawl as Record<string, unknown>).searchFallback).toBe(false);
+    expect((config.ego as Record<string, unknown>).binary).toBe("ego-browser");
+  });
+});
 
 describe.skipIf(!hasExpect)("built CLI ego-lite handoff (platforms simulated with fake openers)", () => {
   it("opens the official page after plan confirmation, verifies only after onboarding consent, and records the path", async () => {

@@ -1,5 +1,7 @@
 # Firecrawl Local provider contract
 
+For the combined Initialization journey, see the [setup guide](setup.md), [opt-in macOS live-run procedure](macos-live-run.md), and [unexecuted evidence scaffold](macos-live-evidence.md).
+
 The certified baseline is firecrawl-local 0.1.0. The local binary was found at /Users/hwj/.cargo/bin/firecrawl-local on the development machine. Other versions are reported by doctor as not fully certified rather than silently treated as identical.
 
 ## Installation and platform evidence
@@ -18,6 +20,8 @@ The version pin is `CERTIFIED_FIRECRAWL_VERSION = "0.1.0"` in `src/init/componen
 | Debian/Ubuntu | Automatic install after prerequisite checks | Official quickstart requires Rust and build-essential | Simulated only, with injected Debian/Ubuntu `os-release`; no live Debian or Ubuntu machine was used |
 | Windows | Detection and manual guidance only; no automatic-installation claim | Official quickstart documents the manual path | Simulated only |
 | Other platforms/distributions | Detection and manual guidance only; no automatic-installation claim | Official quickstart | Simulated only |
+
+The issue #26 all-component macOS live run has **not** been performed by the implementation agent. Until the orchestrator records actual evidence, macOS Initialization also remains simulated-only for this ticket. Windows, Debian/Ubuntu, and all other platforms were not live-tested.
 
 An existing installation, including a version other than 0.1.0, is never upgraded, downgraded, or reinstalled. A newly installed binary is not certified merely because Cargo exited 0: a missing or different version, or a failed health check, is reported as Failed. A successful install records its resolved absolute path so a rerun verifies it instead of installing again. One exception is deliberate: when Cargo installs the certified version but the health check fails, the run is still Failed, yet the resolved binary path is written to `firecrawl.binary` so the rerun verifies rather than reinstalls that binary. Chrome/Chromium is detected and reported as an optional JavaScript-rendering/screenshot enhancement; it is never installed and never a readiness condition.
 
