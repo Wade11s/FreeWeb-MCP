@@ -14,7 +14,7 @@ async function startClient(unrestricted: boolean) {
   const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
   transport = new StdioClientTransport({
     command: process.execPath,
-    args: [resolve("dist/cli.js")],
+    args: [resolve("dist/cli.js"), "mcp"],
     env: {
       ...env,
       FREEWEB_CONFIG: join(root, "missing-config.json"),
@@ -40,7 +40,7 @@ afterEach(async () => {
   root = undefined;
 });
 
-describe("built stdio server", () => {
+describe("built stdio server started through the explicit mcp command", () => {
   it("serves the default MCP tool list over a real child process", async () => {
     const connected = await startClient(false);
     const listed = await connected.listTools();
