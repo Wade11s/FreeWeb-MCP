@@ -315,9 +315,12 @@ Start and read a Crawl Job:
 {
   "url": "https://example.com/docs",
   "limit": 20,
-  "maxDiscoveryDepth": 3
+  "maxDiscoveryDepth": 3,
+  "formats": ["markdown", "links"]
 }
 ```
+
+Crawl Pages are unique and stably ordered across snapshots and checkpoints. When the Job requests `links`, each Page carries the same optional top-level `links` array as a Fetch Page, and `formats.links` is retained for existing consumers.
 
 ```json
 {

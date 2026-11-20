@@ -3,6 +3,7 @@ import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/p
 import { join } from "node:path";
 import { ArtifactOutput } from "../artifacts/output.js";
 import { FreeWebError, errorInfo } from "../errors.js";
+import { mergeCrawlPages, uniqueCrawlPages } from "./crawl-pages.js";
 import type { CrawlJobAdapter, CrawlJobSnapshot } from "./crawl-job-adapter.js";
 import type { CrawlInput, CrawlOutput, CrawlStatusInput } from "../types.js";
 
@@ -89,6 +90,7 @@ export class CrawlManager {
       try {
         const job = JSON.parse(await readFile(join(directory, CHECKPOINT_FILE), "utf8")) as JobRecord;
         if (job.status === "scraping") job.status = "lost";
+        this.reconcilePages(job);
         await this.finalize(job);
         this.jobs.set(job.crawlId, job);
       } catch {
@@ -276,6 +278,7 @@ export class CrawlManager {
       job.status = "lost";
       job.updatedAt = new Date(this.now()).toISOString();
     }
+    this.reconcilePages(job);
     if (!job.artifactId) await this.finalize(job);
     return job;
   }
@@ -349,19 +352,9 @@ export class CrawlManager {
     job.status = snapshot.status;
     job.total = snapshot.total;
     job.completed = snapshot.completed;
-    const previousPages = new Map(job.pages.map((page) => [page.url || page.finalUrl || "", page]));
-    const seen = new Set<string>();
-    const mergedPages = snapshot.pages.map((page) => {
-      const key = page.url || page.finalUrl || "";
-      seen.add(key);
-      return { ...previousPages.get(key), ...page };
-    });
-    for (const page of job.pages) {
-      const key = page.url || page.finalUrl || "";
-      if (!seen.has(key)) mergedPages.push(page);
-    }
-    job.pages = mergedPages;
+    job.pages = mergeCrawlPages(job.pages, snapshot.pages);
     job.errors = snapshot.errors.map((error) => ({ ...error }));
+    this.reconcilePages(job);
     this.warnings.delete(crawlId);
 
     // Writing only on real transitions keeps a 1s poll from rewriting a large
@@ -389,7 +382,7 @@ export class CrawlManager {
     const errors = [...job.errors, ...warnings];
     const preview = await this.artifactOutput.publish({
       kind: "crawl-preview",
-      pages: job.pages,
+      pages: this.outputPages(job),
       offset: input.offset,
       limit: input.limit,
       maxCharsPerPage: input.maxCharsPerPage,
@@ -411,6 +404,33 @@ export class CrawlManager {
       artifactId: job.artifactId,
       expiresAt: job.artifactExpiresAt,
     };
+  }
+
+  /**
+   * Crawl Pages gain the same optional top-level `links` as Fetch Pages when the Job requested
+   * the links format. The value is derived from `formats.links` at read time, so checkpoints
+   * keep one source and existing consumers keep the older representation.
+   */
+  private outputPages(job: JobRecord): CrawlOutput["pages"] {
+    if (!job.input.formats.includes("links")) return job.pages;
+    return job.pages.map((page) => {
+      const stored = page.formats.links;
+      if (!Array.isArray(stored)) return page;
+      const links = stored.filter((link): link is string => typeof link === "string");
+      return { ...page, links };
+    });
+  }
+
+  /**
+   * Keeps the stored collection unique and its counts truthful. An active Provider total may
+   * stay an upper bound, but a terminal Job reports exactly the unique Pages it exposes and
+   * `completed` never exceeds them.
+   */
+  private reconcilePages(job: JobRecord): void {
+    job.pages = uniqueCrawlPages(job.pages);
+    const unique = job.pages.length;
+    job.completed = Math.min(job.completed, unique);
+    job.total = job.status === "scraping" ? Math.max(job.total, unique) : unique;
   }
 
   private async finalize(job: JobRecord): Promise<void> {

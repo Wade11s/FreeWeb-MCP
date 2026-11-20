@@ -268,6 +268,7 @@ export class ArtifactOutput {
     for (const value of Object.values(page.formats)) {
       total += typeof value === "string" ? value.length : (JSON.stringify(value)?.length ?? 0);
     }
+    if (page.links) total += JSON.stringify(page.links)?.length ?? 0;
     return total;
   }
 
@@ -295,7 +296,30 @@ export class ArtifactOutput {
         truncated = true;
       }
     }
-    return { ...page, formats, ...(truncated ? { truncated: true } : {}) };
+    let links = page.links;
+    if (links) {
+      const serialized = JSON.stringify(links) ?? "";
+      if (serialized.length <= remaining) {
+        remaining -= serialized.length;
+      } else {
+        const kept: string[] = [];
+        let linkChars = 2;
+        for (const link of links) {
+          linkChars += link.length + 3;
+          if (linkChars > remaining) break;
+          kept.push(link);
+        }
+        links = kept;
+        remaining = 0;
+        truncated = true;
+      }
+    }
+    return {
+      ...page,
+      formats,
+      ...(links ? { links } : {}),
+      ...(truncated ? { truncated: true } : {}),
+    };
   }
 
   private async publishCrawlCheckpoint(request: CrawlCheckpointRequest): Promise<CrawlCheckpointResult> {
