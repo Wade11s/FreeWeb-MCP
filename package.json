@@ -10,14 +10,6 @@
   "bin": {
     "freeweb-mcp": "./dist/cli.js"
   },
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
-  },
   "files": [
     "dist",
     "README.md",
@@ -32,7 +24,8 @@
     "config.example.json"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "clean": "node scripts/clean.mjs",
+    "build": "node scripts/clean.mjs && tsc -p tsconfig.json",
     "dev": "tsx src/cli.ts mcp",
     "start": "node dist/cli.js mcp",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
@@ -42,7 +35,8 @@
     "pretest:integration": "npm run build",
     "test:integration": "vitest run tests/integration",
     "test:live": "vitest run tests/live",
-    "check": "npm run typecheck && npm run test:unit && npm run test:integration && npm run build"
+    "check": "npm run typecheck && npm run test:unit && npm run test:integration && npm run build",
+    "verify:pack": "node scripts/verify-package.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.4.0",
