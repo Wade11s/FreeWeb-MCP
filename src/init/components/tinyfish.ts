@@ -120,7 +120,7 @@ export function createTinyFishComponent(): InitComponent {
         ...base,
         outcome: "Failed",
         warnings: [],
-        detail: `TinyFish setup could not be completed: ${error instanceof Error ? error.message : String(error)}`,
+        detail: redactInitText(`TinyFish setup could not be completed: ${error instanceof Error ? error.message : String(error)}`, input.env),
       };
     }
   };

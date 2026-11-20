@@ -91,8 +91,9 @@ describe("TinyFish Initialization", () => {
   });
 
   it("does not enable TinyFish when the attestation is declined", async () => {
+    const secret = "unit-tinyfish-declined-secret";
     const { result } = await executeTinyFish(
-      { TINYFISH_API_KEY: "unit-tinyfish-declined-secret" },
+      { TINYFISH_API_KEY: secret },
       { status: "absent" },
       [true, false],
     );
@@ -100,6 +101,7 @@ describe("TinyFish Initialization", () => {
     expect(result.outcome).toBe("Pending");
     expect(result.detail).toContain("attestation was not confirmed");
     expect(result.configPatches).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain(secret);
   });
 
   it("skips optional setup without changing configuration or blocking the required baseline", async () => {
@@ -164,6 +166,28 @@ describe("TinyFish Initialization", () => {
     expect(result.outcome).toBe("Pending");
     expect(result.detail).toContain("TINYFISH_API_KEY is not set");
     expect(io.questions).toEqual([]);
+  });
+
+  it("redacts a credential echoed by a component failure from the result itself", async () => {
+    const component = createTinyFishComponent();
+    const secret = "unit-component-echoed-secret";
+    const env = { TINYFISH_API_KEY: secret };
+    const detection = await component.detect(env, { status: "absent" });
+    const io: InitIo = {
+      prompt: {
+        interactive: true,
+        confirm: async () => { throw new Error(secret); },
+        close: () => {},
+      },
+      writeLine: () => {},
+      errorLine: () => {},
+    };
+
+    const result = await component.execute({ io, env, detection, appliedRepairs: [] });
+    expect(result.outcome).toBe("Failed");
+    expect(result.detail).toBe("TinyFish setup could not be completed: [redacted]");
+    expect(JSON.stringify(result)).not.toContain(secret);
+    expect(result.configPatches).toBeUndefined();
   });
 
   it("classifies a setup prompt failure as Failed without a configuration patch", async () => {
