@@ -22,7 +22,7 @@ import { containsEnvironmentCredential } from "./secrets.js";
 export interface InitDeps {
   readonly env: NodeJS.ProcessEnv;
   readonly configPath: string;
-  /** Registered provider components. #22 registers Firecrawl only. */
+  /** Registered provider components: Firecrawl Local and optional ego-lite. */
   readonly components: readonly InitComponent[];
   readonly store: ConfigStore;
   readonly runDoctor: (config: AppConfig) => Promise<{ ok: boolean; checks: DoctorCheck[] }>;
