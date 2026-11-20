@@ -98,7 +98,7 @@ export function buildInitPlan(context: InitPlanContext): InitPlan {
     items.push({
       component: "configuration",
       action: "configure",
-      description: `configuration at ${configPath} is already complete; no changes will be made`,
+      description: `configuration at ${configPath} is already complete; no content changes will be made, but file mode 0600 and directory mode 0700 will be enforced`,
       required: true,
       selected: true,
     });

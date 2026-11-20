@@ -66,7 +66,7 @@ describe("init plan construction", () => {
     expect(result.items[1]!.description).toContain("every explicit value is preserved");
   });
 
-  it("plans no changes for an already-complete valid config", () => {
+  it("plans permission enforcement without content changes for an already-complete valid config", () => {
     const raw = {
       tinyfish: { freeOnlyConfirmed: false, searchTimeoutMs: 10_000, fetchTimeoutMs: 150_000 },
       firecrawl: { binary: "/bin/firecrawl-local", host: "127.0.0.1" as const, port: 0, allowPrivate: false, searchFallback: false, startupTimeoutMs: 30_000, shutdownTimeoutMs: 5000 },
@@ -76,7 +76,8 @@ describe("init plan construction", () => {
     };
     const result = plan({ status: "ok", raw });
     expect(result.items[1]!.action).toBe("configure");
-    expect(result.items[1]!.description).toContain("no changes will be made");
+    expect(result.items[1]!.description).toContain("no content changes will be made");
+    expect(result.items[1]!.description).toContain("file mode 0600 and directory mode 0700 will be enforced");
     expect(result.repairs).toEqual([]);
   });
 
