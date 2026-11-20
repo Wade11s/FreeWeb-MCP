@@ -145,19 +145,20 @@ function enforceStrictArguments(argv: readonly string[], program: Command): void
 /**
  * Parses argv and dispatches one command. Returns the process exit status.
  * Help and version never load business configuration; `doctor` and `mcp`
- * load and validate it inside their handlers.
+ * load and validate it inside their handlers. A missing or invalid
+ * package.json is reported through `ctx.err` like any other startup failure,
+ * never as an unhandled rejection.
  */
 export async function runCli(argv: readonly string[], ctx: CliContext): Promise<number> {
-  const version = await readPackageVersion();
   const result = { code: 0 };
-  const program = buildProgram(version, ctx, result);
-
-  if (argv.length === 0) {
-    program.outputHelp();
-    return 0;
-  }
-
   try {
+    const program = buildProgram(await readPackageVersion(), ctx, result);
+
+    if (argv.length === 0) {
+      program.outputHelp();
+      return 0;
+    }
+
     enforceStrictArguments(argv, program);
     await program.parseAsync([...argv], { from: "user" });
     return result.code;

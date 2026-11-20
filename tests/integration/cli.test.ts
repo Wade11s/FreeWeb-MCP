@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -165,6 +165,28 @@ describe("built CLI surface", () => {
       expect(result.status).toBe(0);
       expect(result.stderr).toBe("");
       expect(result.stdout).toContain("Usage: freeweb-mcp");
+    }
+  });
+
+  it("reports a broken package.json as a controlled diagnostic instead of an unhandled rejection", async () => {
+    const brokenRoot = await mkdtemp(join(tmpdir(), "freeweb-broken-"));
+    try {
+      await cp(resolve("dist"), join(brokenRoot, "dist"), { recursive: true });
+      await symlink(resolve("node_modules"), join(brokenRoot, "node_modules"));
+      await writeFile(join(brokenRoot, "package.json"), JSON.stringify({ type: "module" }));
+      const result = spawnSync(process.execPath, [join(brokenRoot, "dist", "cli.js"), "--version"], {
+        encoding: "utf8",
+        timeout: 20_000,
+        env: cliEnv({}),
+      });
+      if (result.error) throw result.error;
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).not.toBe("");
+      expect(result.stderr).not.toContain(" at ");
+      expect(result.stderr.trim().split("\n")).toHaveLength(1);
+    } finally {
+      await rm(brokenRoot, { recursive: true, force: true });
     }
   });
 
