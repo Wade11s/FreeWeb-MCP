@@ -336,11 +336,14 @@ class ParallelCloseRunner implements EgoRunner {
 }
 
 async function until(predicate: () => boolean, label: string): Promise<void> {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
+  // CI workers may delay a runner for longer than the old fixed 50 × 1ms
+  // window. Poll with real timers until a wall-clock deadline instead.
+  const deadline = Date.now() + 2_000;
+  for (;;) {
     if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 1));
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${label}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
   }
-  throw new Error(`timed out waiting for ${label}`);
 }
 
 function egoResult(
