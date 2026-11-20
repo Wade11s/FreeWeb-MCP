@@ -140,20 +140,41 @@ function stripShortCircuitFlags(argv: readonly string[]): SplitArgv {
  * (`--version mcp`) parses cleanly on the probe, yet Commander would answer
  * the flag and ignore the token — such a token is rejected as the excess
  * program argument it is, with Commander's own excess-argument diagnostic.
+ *
+ * Unknown help topics are the third masked shape: Commander answers a
+ * help/version flag before it dispatches, so `help nope --version` would
+ * print the version and never reach the help action's unknown-topic check.
+ * They are rejected here as well, before the real parse, so no flag position
+ * can mask them.
  */
 async function rejectMaskedUsageErrors(argv: readonly string[], program: Command, ctx: CliContext): Promise<void> {
   const { rest, commandAfterFlag } = stripShortCircuitFlags(argv);
   if (rest.length === 0 || (rest.length === 1 && rest[0] === "--")) return;
   await buildProbe(ctx).parseAsync(rest, { from: "user" });
-  if (commandAfterFlag === undefined || !program.commands.some((command) => command.name() === commandAfterFlag)) {
-    return;
+  if (commandAfterFlag !== undefined && program.commands.some((command) => command.name() === commandAfterFlag)) {
+    const excess = new Command()
+      .allowExcessArguments(false)
+      .exitOverride()
+      .configureOutput(outputHooks(ctx));
+    // Always fails: this program takes no arguments but is handed the command token.
+    await excess.parseAsync([commandAfterFlag], { from: "user" });
   }
-  const excess = new Command()
-    .allowExcessArguments(false)
-    .exitOverride()
-    .configureOutput(outputHooks(ctx));
-  // Always fails: this program takes no arguments but is handed the command token.
-  await excess.parseAsync([commandAfterFlag], { from: "user" });
+  rejectUnknownHelpTopic(rest, program);
+}
+
+/**
+ * Fails a stripped argv of exactly `help <topic>` whose topic names no real
+ * command. Longer remainders (extra positionals) and option-shaped topics
+ * are already rejected by the probe's own rules, and `help` alone or a known
+ * topic falls through to the real parse. Thrown as a plain error, it reaches
+ * the caller's diagnostic channel — the same `error:` line the help action
+ * produces — with exit code 1 and nothing on stdout.
+ */
+function rejectUnknownHelpTopic(rest: readonly string[], program: Command): void {
+  if (rest.length !== 2 || rest[0] !== "help") return;
+  const topic = rest[1]!;
+  if (program.commands.some((command) => command.name() === topic)) return;
+  throw new Error(`error: unknown help topic '${topic}'`);
 }
 
 /**

@@ -134,6 +134,39 @@ describe("built CLI surface", () => {
     expect(result.stderr).toContain("unknown help topic");
   });
 
+  it("fails unknown help topics even when a help or version flag could mask them", () => {
+    for (const args of [
+      ["help", "nope"],
+      ["help", "nope", "--version"],
+      ["help", "--version", "nope"],
+      ["help", "nope", "--help"],
+      ["help", "--help", "nope"],
+      ["help", "nope", "-h"],
+      ["help", "nope", "-v"],
+    ]) {
+      const result = runCli(args);
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("error: unknown help topic 'nope'");
+    }
+  });
+
+  it("keeps valid help topics and the help command's own help flags working", () => {
+    for (const args of [["help", "print-config"], ["help", "help"], ["help", "--help"], ["help", "-h"]]) {
+      const result = runCli(args);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("Usage: freeweb-mcp");
+    }
+  });
+
+  it("keeps failing a version flag followed by the help command and an unknown topic", () => {
+    const result = runCli(["--version", "help", "nope"]);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("too many arguments");
+  });
+
   it("fails excess positional arguments with exit code 1 and a stderr diagnostic", () => {
     for (const args of [["doctor", "extra"], ["mcp", "extra"], ["print-config", "extra"], ["help", "mcp", "doctor"]]) {
       const result = runCli(args);
