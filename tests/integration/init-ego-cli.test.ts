@@ -52,6 +52,10 @@ function cliEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
     FREEWEB_CONFIG: configPath,
     FREEWEB_DATA_DIR: join(root, "data"),
     TINYFISH_API_KEY: "unit-ego-secret-do-not-leak",
+    // The default cases simulate the macOS handoff on every CI host. Windows
+    // and unsupported-platform cases override this explicitly per scenario.
+    FREEWEB_INIT_TEST_MODE: "1",
+    FREEWEB_INIT_PLATFORM: "darwin",
     ...overrides,
   };
 }

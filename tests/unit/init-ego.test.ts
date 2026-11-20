@@ -83,7 +83,16 @@ function installedDetection(overrides: Partial<InitDetection> = {}): InitDetecti
 }
 
 function env(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
-  return { PATH: [root, dirname(process.execPath), "/usr/bin", "/bin"].join(delimiter), HOME: root, ...overrides };
+  return {
+    PATH: [root, dirname(process.execPath), "/usr/bin", "/bin"].join(delimiter),
+    HOME: root,
+    // Most cases exercise the supported-desktop handoff. Keep that simulated
+    // on every CI host; production-mode and unsupported-platform cases opt out
+    // or override these values explicitly below.
+    FREEWEB_INIT_TEST_MODE: "1",
+    FREEWEB_INIT_PLATFORM: "darwin",
+    ...overrides,
+  };
 }
 
 function simulatedPlatform(platform: string): Record<string, string> {
@@ -172,7 +181,10 @@ describe("ego-lite init detection and plan", () => {
     try {
       const { runner } = recorder();
       const component = createEgoComponent({ commandRunner: runner });
-      const detection = await component.detect(env({ FREEWEB_INIT_PLATFORM: "linux" }), { status: "absent" });
+      const detection = await component.detect(
+        env({ FREEWEB_INIT_TEST_MODE: "0", FREEWEB_INIT_PLATFORM: "linux" }),
+        { status: "absent" },
+      );
 
       expect(detection.warnings).toBeUndefined();
       expect(component.plan(detection)[0]!.description).not.toContain("linux");
