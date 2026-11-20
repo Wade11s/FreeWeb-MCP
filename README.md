@@ -247,7 +247,7 @@ Useful environment overrides:
 | --- | --- |
 | `FREEWEB_CONFIG` | Configuration file path |
 | `FREEWEB_DATA_DIR` | Private Artifact/checkpoint directory (default `~/.freeweb-mcp`) |
-| `FREEWEB_TRUSTED_DNS_SERVERS` | Comma-separated public DNS IPv4/IPv6 literals used only for verified fake-ip Fetch; empty by default |
+| `FREEWEB_TRUSTED_DNS_SERVERS` | Comma-separated public DNS IPv4/IPv6 literals used only for verified fake-ip Fetch and Crawl; empty by default |
 | `TINYFISH_API_KEY` | TinyFish key |
 | `FREEWEB_TINYFISH_FREE_ONLY_CONFIRMED` | `true` only after the no-wallet-spending check |
 | `FIRECRAWL_LOCAL_BIN` | Firecrawl binary path |
@@ -258,9 +258,9 @@ Useful environment overrides:
 
 Firecrawl and ego private-network access have separate opt-in settings. Do not enable them for untrusted MCP clients.
 
-`network.trustedDnsServers` defaults to `[]` and accepts only public IP literals, not resolver hostnames or URLs. For a non-IP Fetch hostname, trusted DNS is consulted only when every system answer is in `198.18.0.0/15`. Ordinary and mixed answers never contact it. An all-fake-ip answer without configuration returns `FAKE_IP_DNS_DETECTED`; trusted resolution failure or no answers returns retryable `FAKE_IP_DNS_UNVERIFIED`. Every trusted answer must be public. Direct fake-ip literals, private trusted answers, local/private targets, credentialed URLs, and non-HTTP(S) URLs remain blocked, and validation failures never trigger Provider Fallback.
+`network.trustedDnsServers` defaults to `[]` and accepts only public IP literals, not resolver hostnames or URLs. For a non-IP Fetch or Crawl start hostname, trusted DNS is consulted only when every system answer is in `198.18.0.0/15`. Ordinary and mixed answers never contact it. An all-fake-ip answer without configuration returns `FAKE_IP_DNS_DETECTED`; trusted resolution failure or no answers returns retryable `FAKE_IP_DNS_UNVERIFIED`. Every trusted answer must be public. Direct fake-ip literals, private trusted answers, local/private targets, credentialed URLs, and non-HTTP(S) URLs remain blocked, and validation failures never trigger Provider Fallback.
 
-Local Fetch and TinyFish Fetch both use this policy while retaining their own public-only checks; TinyFish revalidates at its Provider boundary. Configuring trusted DNS does not enable either `allowPrivate` setting. Configuration is startup-loaded: after changing `network.trustedDnsServers` or `FREEWEB_TRUSTED_DNS_SERVERS`, restart the MCP server or reload the MCP session.
+Local Fetch, TinyFish Fetch and Crawl startup all use this policy while retaining their own public-only checks; TinyFish revalidates at its Provider boundary and Firecrawl Local keeps its serve-level public-only protection. A Crawl target that fails this policy creates no Crawl Job and makes no Provider request. Configuring trusted DNS does not enable either `allowPrivate` setting. Configuration is startup-loaded: after changing `network.trustedDnsServers` or `FREEWEB_TRUSTED_DNS_SERVERS`, restart the MCP server or reload the MCP session.
 
 ### Search providers and per-call Fallback
 
