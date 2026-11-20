@@ -14,6 +14,7 @@ let binDir: string;
 let configDir: string;
 let configPath: string;
 let homeDir: string;
+let stubDir: string;
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "freeweb-init-cli-"));
@@ -21,8 +22,11 @@ beforeEach(async () => {
   configDir = join(root, "config");
   configPath = join(configDir, "config.json");
   homeDir = join(root, "home");
+  stubDir = join(root, "stubs");
   await mkdir(binDir, { recursive: true });
   await mkdir(configDir, { recursive: true });
+  await mkdir(stubDir, { recursive: true });
+  await writeStubOpeners();
 });
 
 afterEach(async () => {
@@ -33,7 +37,7 @@ function cliEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
   const base = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
   return {
     ...base,
-    PATH: [binDir, dirname(process.execPath), "/usr/bin", "/bin"].join(delimiter),
+    PATH: [stubDir, binDir, dirname(process.execPath), "/usr/bin", "/bin"].join(delimiter),
     HOME: homeDir,
     FREEWEB_CONFIG: configPath,
     FREEWEB_DATA_DIR: join(root, "data"),
@@ -46,6 +50,19 @@ function runCli(args: string[], overrides: Record<string, string> = {}): { statu
   const result = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", timeout: 20_000, env: cliEnv(overrides) });
   if (result.error) throw result.error;
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+}
+
+/** Records opener calls instead of launching a real browser on any platform. */
+async function writeStubOpeners(): Promise<void> {
+  const log = join(stubDir, "open-invocations.log");
+  const script = `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(1)) + "\\n");
+`;
+  for (const name of ["open", "explorer.exe"]) {
+    await writeFile(join(stubDir, name), script, { mode: 0o755 });
+    await chmod(join(stubDir, name), 0o755);
+  }
 }
 
 async function writeFakeFirecrawl(): Promise<void> {
@@ -173,7 +190,7 @@ describe("built CLI non-TTY init", () => {
     expect(result.stderr).toContain("no changes were made");
     expect(existsSync(configPath)).toBe(false);
     expect(existsSync(join(root, "data"))).toBe(false);
-    expect((await readdir(root)).sort()).toEqual(["bin", "config"]);
+    expect((await readdir(root)).sort()).toEqual(["bin", "config", "stubs"]);
     expect((await readdir(configDir)).length).toBe(0);
     // The fake provider was never invoked, not even for a version probe.
     expect((await readdir(binDir)).sort()).toEqual(["firecrawl-local"]);
@@ -183,10 +200,11 @@ describe("built CLI non-TTY init", () => {
 describe.skipIf(!hasExpect)("built CLI interactive init behind a pseudo-terminal", () => {
   it("confirms the plan, verifies, writes private configuration, and exits 0", async () => {
     await writeFakeFirecrawl();
-    const result = await runCliInPty(["y"]);
+    const result = await runCliInPty(["y", "n"]);
     expect(result.status).toBe(0);
     expect(result.output).toContain("FreeWeb-MCP initialization plan:");
     expect(result.output).toContain("Firecrawl Local: Installed");
+    expect(result.output).toContain("ego-lite: Pending");
     expect(result.output).toContain("Configuration: Configured");
     expect(result.output).toContain("PASS node:");
     expect(result.output).toContain("print-config");
@@ -212,7 +230,7 @@ describe.skipIf(!hasExpect)("built CLI interactive init behind a pseudo-terminal
   it("recovers a malformed configuration after explicit backup-and-rebuild consent", async () => {
     await writeFakeFirecrawl();
     await writeFile(configPath, "{ not valid json");
-    const result = await runCliInPty(["y"]);
+    const result = await runCliInPty(["y", "n"]);
     expect(result.status).toBe(0);
     expect(result.output).toContain("never treated as absent");
     expect(await readFile(join(configDir, "config.backup.json"), "utf8")).toBe("{ not valid json");
