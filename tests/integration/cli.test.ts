@@ -143,6 +143,31 @@ describe("built CLI surface", () => {
     }
   });
 
+  it("fails excess positionals even when combined with a help or version flag", () => {
+    for (const args of [["-v", "extra"], ["--version", "extra"], ["--help", "extra"], ["--help", "mcp"], ["doctor", "extra", "--version"], ["mcp", "extra", "--help"]]) {
+      const result = runCli(args);
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("too many arguments");
+    }
+  });
+
+  it("fails an unknown command that merely precedes a version flag", () => {
+    const result = runCli(["extra", "--version"]);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("unknown command");
+  });
+
+  it("keeps command help valid alongside other flags", () => {
+    for (const args of [["doctor", "--help"], ["doctor", "--json", "--help"], ["mcp", "--help"], ["help", "mcp"]]) {
+      const result = runCli(args);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("Usage: freeweb-mcp");
+    }
+  });
+
   it("fails mcp and doctor with invalid business configuration", () => {
     const overrides = { FREEWEB_CONFIG: invalidConfigPath! };
     const mcp = runCli(["mcp"], overrides);
