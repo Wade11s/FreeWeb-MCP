@@ -47,11 +47,25 @@ const CONFIGURATION_LABEL = "Configuration";
 const DEFAULT_TIMEOUTS: InitTimeouts = { startupTimeoutMs: 30_000, shutdownTimeoutMs: 5_000 };
 
 /**
+ * Final init error boundary. Component exceptions are rendered through the
+ * same redactor as ordinary output, so they never reach runCli unredacted.
+ */
+export async function runInit(io: InitIo, deps: InitDeps): Promise<number> {
+  const redactedIo = redactInitIo(io, deps.env);
+  try {
+    return await runInitCore(redactedIo, deps);
+  } catch (error) {
+    redactedIo.errorLine(`Initialization failed: ${error instanceof Error ? error.message : String(error)}`);
+    return 1;
+  }
+}
+
+/**
  * The Initialization orchestrator: plan → confirm → execute every component →
  * apply all configuration contributions in one write → doctor → summary. It
  * never starts the MCP server or touches other MCP clients' configurations.
  */
-export async function runInit(io: InitIo, deps: InitDeps): Promise<number> {
+async function runInitCore(io: InitIo, deps: InitDeps): Promise<number> {
   // A non-TTY invocation stops before any read, write, installation, or
   // provider launch: there is no unattended mode.
   if (!io.prompt.interactive) {
@@ -59,10 +73,6 @@ export async function runInit(io: InitIo, deps: InitDeps): Promise<number> {
     io.errorLine("Run it from an interactive shell. There is no unattended mode.");
     return 1;
   }
-
-  // Every component-controlled display field and repair prompt crosses this
-  // boundary. Components cannot accidentally print an environment credential.
-  io = redactInitIo(io, deps.env);
 
   // Read-only phase: classify configuration and resolve provider binaries
   // without launching providers. Probes and verification wait for consent.

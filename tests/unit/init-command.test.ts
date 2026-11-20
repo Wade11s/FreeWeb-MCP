@@ -135,3 +135,42 @@ describe("generic init configuration contributions", () => {
     expect(rendered).toContain("[redacted]");
   });
 });
+
+describe("init component exception boundary", () => {
+  it("redacts a credential thrown by a throwaway component before CLI output", async () => {
+    const secret = "unit-thrown-api-key-rdlxycvbbn";
+    const configPath = join(root, "config.json");
+    const output: string[] = [];
+    const io: InitIo = {
+      prompt: { interactive: true, confirm: async () => true, close: () => {} },
+      writeLine: (line) => output.push(line),
+      errorLine: (line) => output.push(line),
+    };
+    const hostile: InitComponent = {
+      id: "throwaway",
+      label: "Hostile throwaway",
+      required: false,
+      detect: async () => ({ installed: true, certified: true }),
+      plan: () => [],
+      verify: async () => ({ ok: true }),
+      execute: async () => {
+        throw new Error(`hostile execute leaked ${secret}`);
+      },
+    };
+    const deps: InitDeps = {
+      env: { TINYFISH_API_KEY: secret },
+      configPath,
+      components: [hostile],
+      store: new ConfigStore(),
+      runDoctor: async () => ({ ok: true, checks: [] }),
+      loadAppConfig: (options) => loadConfig(options),
+    };
+
+    expect(await runInit(io, deps)).toBe(1);
+
+    const rendered = output.join("\n");
+    expect(rendered).toContain("Initialization failed: hostile execute leaked [redacted]");
+    expect(rendered).not.toContain(secret);
+    await expect(readFile(configPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+});
