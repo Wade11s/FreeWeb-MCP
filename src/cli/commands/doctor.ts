@@ -67,6 +67,7 @@ function labelOf(name: string): string {
     "firecrawl-local": "Firecrawl Local",
     "ego-browser": "ego-lite command",
     tinyfish: "TinyFish Search/Fetch",
+    "trusted-dns": "Trusted DNS for fake-ip",
     "ego-platform": "Managed Browse platform",
     "data-directory": "Data directory",
   };
@@ -75,6 +76,9 @@ function labelOf(name: string): string {
 
 /** Actionable guidance is attached to its check as well as summarized below. */
 function remediationOf(check: DoctorCheck): string | undefined {
+  if (check.name === "trusted-dns") {
+    return "Optional for fake-ip DNS: set network.trustedDnsServers or FREEWEB_TRUSTED_DNS_SERVERS to public DNS IP literals. Configuration changes require MCP restart or session reload.";
+  }
   if (check.ok && !check.warning) return undefined;
   if (check.warning && check.name === "firecrawl-local") {
     return "Use Firecrawl Local v0.1.0 for the certified baseline, or run the contract tests for this version.";
@@ -108,7 +112,9 @@ function outputReport(report: DoctorReport, config?: AppConfig, showConfig = fal
       ...(remediation ? { remediation } : {}),
     };
   });
-  const remediations = checks.flatMap((check) => check.remediation ? [check.remediation] : []);
+  const remediations = checks.flatMap((check) =>
+    check.remediation && (!check.ok || check.warning) ? [check.remediation] : []
+  );
   const nextSteps = remediations.length > 0
     ? [...new Set(remediations)]
     : ["Run `freeweb-mcp print-config` to obtain the MCP client configuration."];
@@ -148,7 +154,9 @@ function renderTextReport(
       const detail = detailOf(check);
       lines.push(`  ${check.status.padEnd(4)} ${labelOf(check.name)}${detail ? `: ${detail}` : ""}`);
       if (check.warning) lines.push(`       Warning: ${check.warning}`);
-      if (check.remediation && (!check.ok || check.warning)) lines.push(`       Next: ${check.remediation}`);
+      if (check.remediation && (!check.ok || check.warning || check.name === "trusted-dns")) {
+        lines.push(`       Next: ${check.remediation}`);
+      }
     }
   };
   writeGroup("Required checks", true);

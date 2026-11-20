@@ -8,6 +8,8 @@ const PUBLIC_V6 = "2606:2800:220:1:248:1893:25c8:1946";
 type AssertOptions = NonNullable<Parameters<typeof assertPublicHttpUrl>[1]>;
 type LookupFn = NonNullable<AssertOptions["lookupFn"]>;
 type LookupCall = { hostname: string; options: unknown };
+type TrustedLookupFn = NonNullable<AssertOptions["trustedLookupFn"]>;
+type TrustedLookupCall = { hostname: string; servers: readonly string[] };
 
 /** Fake resolver: never touches the network, records every call. */
 function fakeLookup(addresses: Array<string | { address: string; family: number }>) {
@@ -19,6 +21,15 @@ function fakeLookup(addresses: Array<string | { address: string; family: number 
     );
   }) as unknown as LookupFn;
   return { lookupFn, calls };
+}
+
+function fakeTrustedLookup(addresses: string[]) {
+  const calls: TrustedLookupCall[] = [];
+  const trustedLookupFn: TrustedLookupFn = async (hostname, servers) => {
+    calls.push({ hostname, servers });
+    return addresses.map((address) => ({ address }));
+  };
+  return { trustedLookupFn, calls };
 }
 
 async function rejection(promise: Promise<unknown>): Promise<FreeWebError> {
@@ -237,6 +248,150 @@ describe("assertPublicHttpUrl: DNS resolution", () => {
     const error = await expectCode("https://broken.example/", "DNS_LOOKUP_FAILED", { lookupFn });
     expect(error.options.retryable).toBe(true);
     expect(error.options.cause).toBe(cause);
+  });
+});
+
+describe("assertPublicHttpUrl: fake-ip DNS", () => {
+  const servers = ["1.1.1.1", "2606:4700:4700::1111"];
+
+  it("never contacts trusted DNS for ordinary public system answers", async () => {
+    const { lookupFn } = fakeLookup([PUBLIC_V4, PUBLIC_V6]);
+    const { trustedLookupFn, calls } = fakeTrustedLookup(["10.0.0.1"]);
+    await expect(assertPublicHttpUrl("https://public.example/", {
+      lookupFn,
+      trustedLookupFn,
+      trustedDnsServers: servers,
+    })).resolves.toBeInstanceOf(URL);
+    expect(calls).toEqual([]);
+  });
+
+  it("never contacts trusted DNS for direct public or fake-ip literals", async () => {
+    const { lookupFn, calls: systemCalls } = fakeLookup([PUBLIC_V4]);
+    const { trustedLookupFn, calls: trustedCalls } = fakeTrustedLookup([PUBLIC_V4]);
+    await expect(assertPublicHttpUrl(`https://${PUBLIC_V4}/`, {
+      lookupFn,
+      trustedLookupFn,
+      trustedDnsServers: servers,
+    })).resolves.toBeInstanceOf(URL);
+    await expectCode("https://198.19.255.255/", "PRIVATE_URL_BLOCKED", {
+      lookupFn,
+      trustedLookupFn,
+      trustedDnsServers: servers,
+    });
+    expect(systemCalls).toEqual([]);
+    expect(trustedCalls).toEqual([]);
+  });
+
+  it("returns actionable FAKE_IP_DNS_DETECTED without trusted configuration", async () => {
+    const { lookupFn } = fakeLookup(["198.18.0.1", "198.19.255.255"]);
+    const { trustedLookupFn, calls } = fakeTrustedLookup([PUBLIC_V4]);
+    const error = await expectCode("https://proxy.example/", "FAKE_IP_DNS_DETECTED", {
+      lookupFn,
+      trustedLookupFn,
+    });
+    expect(error.message).toContain("network.trustedDnsServers");
+    expect(error.message).toContain("FREEWEB_TRUSTED_DNS_SERVERS");
+    expect(error.message).toMatch(/restart the MCP server or reload the session/);
+    expect(error.options.retryable).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
+  it("verifies an all-fake-ip hostname through both configured trusted servers", async () => {
+    const { lookupFn, calls: systemCalls } = fakeLookup(["198.18.0.1", "198.19.255.255"]);
+    const { trustedLookupFn, calls } = fakeTrustedLookup([PUBLIC_V4, PUBLIC_V6]);
+    const url = await assertPublicHttpUrl("https://proxy.example/", {
+      lookupFn,
+      trustedLookupFn,
+      trustedDnsServers: servers,
+    });
+    expect(url.hostname).toBe("proxy.example");
+    expect(systemCalls).toHaveLength(1);
+    expect(calls).toEqual([{ hostname: "proxy.example", servers }]);
+  });
+
+  it("treats an IPv4-mapped fake-ip answer as fake-ip", async () => {
+    const { lookupFn } = fakeLookup(["::ffff:198.18.0.1"]);
+    const { trustedLookupFn, calls } = fakeTrustedLookup([PUBLIC_V4]);
+    await expect(assertPublicHttpUrl("https://proxy.example/", {
+      lookupFn,
+      trustedLookupFn,
+      trustedDnsServers: servers,
+    })).resolves.toBeInstanceOf(URL);
+    expect(calls).toHaveLength(1);
+  });
+
+  it.each([["198.18.0.1", PUBLIC_V4], ["198.18.0.1", "10.0.0.1"]])(
+    "blocks mixed system answers without trusted resolution: %j",
+    async (...addresses) => {
+      const { lookupFn } = fakeLookup(addresses);
+      const { trustedLookupFn, calls } = fakeTrustedLookup([PUBLIC_V4]);
+      await expectCode("https://mixed.example/", "PRIVATE_URL_BLOCKED", {
+        lookupFn,
+        trustedLookupFn,
+        trustedDnsServers: servers,
+      });
+      expect(calls).toEqual([]);
+    },
+  );
+
+  it("does not turn an empty system result into a fake-ip exception", async () => {
+    const { lookupFn } = fakeLookup([]);
+    const { trustedLookupFn, calls } = fakeTrustedLookup([PUBLIC_V4]);
+    await expectCode("https://empty.example/", "PRIVATE_URL_BLOCKED", {
+      lookupFn,
+      trustedLookupFn,
+      trustedDnsServers: servers,
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it("returns retryable FAKE_IP_DNS_UNVERIFIED when trusted resolution fails", async () => {
+    const cause = new Error("resolver unavailable");
+    const { lookupFn } = fakeLookup(["198.18.0.1"]);
+    const trustedLookupFn: TrustedLookupFn = async () => { throw cause; };
+    const error = await expectCode("https://proxy.example/", "FAKE_IP_DNS_UNVERIFIED", {
+      lookupFn,
+      trustedLookupFn,
+      trustedDnsServers: servers,
+    });
+    expect(error.options.retryable).toBe(true);
+    expect(error.options.cause).toBe(cause);
+    expect(error.message).toMatch(/retry/);
+  });
+
+  it("returns retryable FAKE_IP_DNS_UNVERIFIED when trusted DNS has no answers", async () => {
+    const { lookupFn } = fakeLookup(["198.18.0.1"]);
+    const { trustedLookupFn } = fakeTrustedLookup([]);
+    const error = await expectCode("https://proxy.example/", "FAKE_IP_DNS_UNVERIFIED", {
+      lookupFn,
+      trustedLookupFn,
+      trustedDnsServers: servers,
+    });
+    expect(error.options.retryable).toBe(true);
+  });
+
+  it.each(["10.0.0.1", "127.0.0.1", "198.18.0.2", "fd00::1", "not-an-ip"] )(
+    "blocks unsafe trusted answer %s",
+    async (address) => {
+      const { lookupFn } = fakeLookup(["198.18.0.1"]);
+      const { trustedLookupFn } = fakeTrustedLookup([PUBLIC_V4, address]);
+      await expectCode("https://proxy.example/", "PRIVATE_URL_BLOCKED", {
+        lookupFn,
+        trustedLookupFn,
+        trustedDnsServers: servers,
+      });
+    },
+  );
+
+  it("does not contact trusted DNS when the system lookup fails", async () => {
+    const lookupFn = (async () => { throw new Error("ENOTFOUND"); }) as unknown as LookupFn;
+    const { trustedLookupFn, calls } = fakeTrustedLookup([PUBLIC_V4]);
+    await expectCode("https://broken.example/", "DNS_LOOKUP_FAILED", {
+      lookupFn,
+      trustedLookupFn,
+      trustedDnsServers: servers,
+    });
+    expect(calls).toEqual([]);
   });
 });
 

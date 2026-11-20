@@ -80,7 +80,7 @@ Text mode starts with the overall state and summary, separates required checks f
 ```text
 FreeWeb-MCP Doctor
 Status: ACTION REQUIRED
-Summary: 4/6 checks passed; 1 required failed; 1 warning
+Summary: 5/7 checks passed; 1 required failed; 1 warning
 
 Required checks
   PASS Node.js runtime: v22.12.0
@@ -91,6 +91,8 @@ Required checks
 Optional capabilities
   PASS ego-lite command: ego-browser 1.2.3
   WARN TinyFish Search/Fetch: Disabled: TINYFISH_API_KEY is not set
+  PASS Trusted DNS for fake-ip: Not configured (default): all-fake-ip system answers remain unverified
+       Next: Optional for fake-ip DNS: set network.trustedDnsServers or FREEWEB_TRUSTED_DNS_SERVERS to public DNS IP literals. Configuration changes require MCP restart or session reload.
   PASS Managed Browse platform: darwin
 
 Next steps
@@ -100,7 +102,7 @@ Configuration is hidden by default; use --show-config to display it with secrets
 ```
 
 - `PASS` means the check passed, `FAIL` means a required check failed, and `WARN` means an optional check failed. Uncertified-version warnings are shown beneath their check.
-- The checks remain `node`, `firecrawl-local`, `ego-browser`, `tinyfish`, `ego-platform`, and `data-directory`, in that order in JSON. `node` enforces the `engines.node` floor from `package.json`; `tinyfish` reports configuration and account attestation only.
+- The checks remain `node`, `firecrawl-local`, `ego-browser`, `tinyfish`, `trusted-dns`, `ego-platform`, and `data-directory`, in that order in JSON. `node` enforces the `engines.node` floor from `package.json`; `tinyfish` reports configuration and account attestation only; `trusted-dns` reports configuration state without a DNS or business request and includes MCP restart/session-reload remediation.
 - `--show-config` adds the effective file-plus-environment configuration with the TinyFish key replaced by `[redacted]`. Without it, neither text nor JSON includes the complete configuration.
 
 `--json` writes one `schemaVersion: 1` document to stdout. Existing `ok` and `checks` fields are retained; each check also has `status` and optional `remediation`, and the report adds `summary` and `nextSteps`:
@@ -111,7 +113,7 @@ Configuration is hidden by default; use --show-config to display it with secrets
   "command": "doctor",
   "ok": false,
   "status": "action_required",
-  "summary": { "total": 6, "passed": 4, "failed": 1, "warnings": 1 },
+  "summary": { "total": 7, "passed": 5, "failed": 1, "warnings": 1 },
   "checks": [
     { "name": "node", "ok": true, "required": true, "version": "v22.12.0", "status": "PASS" },
     {
@@ -211,6 +213,9 @@ Set `FREEWEB_CONFIG` to use another path. Start with [`config.example.json`](con
 
 ```json
 {
+  "network": {
+    "trustedDnsServers": []
+  },
   "tinyfish": {
     "freeOnlyConfirmed": false
   },
@@ -242,6 +247,7 @@ Useful environment overrides:
 | --- | --- |
 | `FREEWEB_CONFIG` | Configuration file path |
 | `FREEWEB_DATA_DIR` | Private Artifact/checkpoint directory (default `~/.freeweb-mcp`) |
+| `FREEWEB_TRUSTED_DNS_SERVERS` | Comma-separated public DNS IPv4/IPv6 literals used only for verified fake-ip Fetch; empty by default |
 | `TINYFISH_API_KEY` | TinyFish key |
 | `FREEWEB_TINYFISH_FREE_ONLY_CONFIRMED` | `true` only after the no-wallet-spending check |
 | `FIRECRAWL_LOCAL_BIN` | Firecrawl binary path |
@@ -251,6 +257,10 @@ Useful environment overrides:
 | `FREEWEB_EGO_UNRESTRICTED` | Register the unrestricted `browse_node` tool |
 
 Firecrawl and ego private-network access have separate opt-in settings. Do not enable them for untrusted MCP clients.
+
+`network.trustedDnsServers` defaults to `[]` and accepts only public IP literals, not resolver hostnames or URLs. For a non-IP Fetch hostname, trusted DNS is consulted only when every system answer is in `198.18.0.0/15`. Ordinary and mixed answers never contact it. An all-fake-ip answer without configuration returns `FAKE_IP_DNS_DETECTED`; trusted resolution failure or no answers returns retryable `FAKE_IP_DNS_UNVERIFIED`. Every trusted answer must be public. Direct fake-ip literals, private trusted answers, local/private targets, credentialed URLs, and non-HTTP(S) URLs remain blocked, and validation failures never trigger Provider Fallback.
+
+Local Fetch and TinyFish Fetch both use this policy while retaining their own public-only checks; TinyFish revalidates at its Provider boundary. Configuring trusted DNS does not enable either `allowPrivate` setting. Configuration is startup-loaded: after changing `network.trustedDnsServers` or `FREEWEB_TRUSTED_DNS_SERVERS`, restart the MCP server or reload the MCP session.
 
 ### Search providers and per-call Fallback
 

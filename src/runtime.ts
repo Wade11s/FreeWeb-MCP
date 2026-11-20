@@ -72,7 +72,12 @@ export class FreeWebRuntime implements FreeWebToolHandlers {
   async search(input: SearchInput) { return this.router.search(input); }
 
   async fetch(input: FetchInput) {
-    for (const url of input.urls) await assertPublicHttpUrl(url, { allowPrivate: this.config.firecrawl.allowPrivate });
+    for (const url of input.urls) {
+      await assertPublicHttpUrl(url, {
+        allowPrivate: this.config.firecrawl.allowPrivate,
+        trustedDnsServers: this.config.network.trustedDnsServers,
+      });
+    }
     return this.router.fetch(input);
   }
 

@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -7,6 +7,64 @@ import { loadConfig, redactedConfig } from "../../src/config.js";
 let root: string;
 beforeEach(async () => { root = await mkdtemp(join(tmpdir(), "freeweb-config-test-")); });
 afterEach(async () => { await rm(root, { recursive: true, force: true }); });
+
+describe("trusted DNS configuration", () => {
+  it("defaults to no trusted servers", async () => {
+    const config = await loadConfig({ configPath: join(root, "missing.json"), env: {} });
+    expect(config.network.trustedDnsServers).toEqual([]);
+  });
+
+  it("accepts public IPv4 and IPv6 literals from the network setting", async () => {
+    const path = join(root, "config.json");
+    await writeFile(path, JSON.stringify({
+      network: { trustedDnsServers: ["1.1.1.1", "2606:4700:4700::1111"] },
+    }));
+    const config = await loadConfig({ configPath: path, env: {} });
+    expect(config.network.trustedDnsServers).toEqual(["1.1.1.1", "2606:4700:4700::1111"]);
+  });
+
+  it("applies the comma-separated environment override and permits an explicit empty override", async () => {
+    const path = join(root, "config.json");
+    await writeFile(path, JSON.stringify({ network: { trustedDnsServers: ["9.9.9.9"] } }));
+    const config = await loadConfig({
+      configPath: path,
+      env: { FREEWEB_TRUSTED_DNS_SERVERS: " 1.1.1.1, 2606:4700:4700::1111 " },
+    });
+    expect(config.network.trustedDnsServers).toEqual(["1.1.1.1", "2606:4700:4700::1111"]);
+
+    const disabled = await loadConfig({ configPath: path, env: { FREEWEB_TRUSTED_DNS_SERVERS: "" } });
+    expect(disabled.network.trustedDnsServers).toEqual([]);
+  });
+
+  it.each([
+    "dns.example",
+    "127.0.0.1",
+    "10.0.0.1",
+    "169.254.169.254",
+    "198.18.0.1",
+    "::1",
+    "fd00::1",
+    "https://1.1.1.1",
+    "user@1.1.1.1",
+    "[2606:4700:4700::1111]",
+    "1.1.1.1%eth0",
+  ])("rejects non-public or non-literal trusted server %s", async (server) => {
+    const path = join(root, "config.json");
+    await writeFile(path, JSON.stringify({ network: { trustedDnsServers: [server] } }));
+    await expect(loadConfig({ configPath: path, env: {} })).rejects.toMatchObject({ code: "INVALID_CONFIG" });
+    await expect(loadConfig({
+      configPath: join(root, "missing.json"),
+      env: { FREEWEB_TRUSTED_DNS_SERVERS: server },
+    })).rejects.toMatchObject({ code: "INVALID_CONFIG" });
+  });
+
+  it("rejects empty entries in a non-empty environment list", async () => {
+    await expect(loadConfig({
+      configPath: join(root, "missing.json"),
+      env: { FREEWEB_TRUSTED_DNS_SERVERS: "1.1.1.1,,8.8.8.8" },
+    })).rejects.toMatchObject({ code: "INVALID_CONFIG" });
+  });
+});
 
 describe("configuration environment overrides", () => {
   it("revalidates port ranges after applying environment overrides", async () => {

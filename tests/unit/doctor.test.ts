@@ -87,6 +87,26 @@ describe("doctor Node.js runtime floor", () => {
   });
 });
 
+describe("doctor trusted DNS state", () => {
+  it("reports the default and configured states without a DNS check", async () => {
+    const config = await testConfig();
+    const initial = await runDoctor(config, { minimumNodeVersion: [22, 12, 0] });
+    expect(initial.checks.find((check) => check.name === "trusted-dns")).toMatchObject({
+      ok: true,
+      required: false,
+      message: expect.stringContaining("Not configured"),
+    });
+
+    config.network.trustedDnsServers = ["1.1.1.1", "2606:4700:4700::1111"];
+    const configured = await runDoctor(config, { minimumNodeVersion: [22, 12, 0] });
+    expect(configured.checks.find((check) => check.name === "trusted-dns")).toMatchObject({
+      ok: true,
+      required: false,
+      message: expect.stringContaining("Configured: 2"),
+    });
+  });
+});
+
 describe("doctor package metadata", () => {
   it("reads the runtime floor and version from package.json instead of duplicating them", async () => {
     const declared = JSON.parse(await readFile(resolve("package.json"), "utf8")) as {

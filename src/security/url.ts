@@ -1,4 +1,4 @@
-import { lookup } from "node:dns/promises";
+import { lookup, Resolver } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
 import { FreeWebError } from "../errors.js";
 
@@ -8,6 +8,8 @@ import { FreeWebError } from "../errors.js";
  * arithmetic stay in Node's hands instead of hand-rolled regexes.
  */
 const BLOCKED = new BlockList();
+const FAKE_IP = new BlockList();
+FAKE_IP.addSubnet("198.18.0.0", 15, "ipv4");
 
 const IPV4_BLOCKED: ReadonlyArray<readonly [address: string, prefix: number]> = [
   ["0.0.0.0", 8], // "this network"
@@ -60,6 +62,20 @@ function normalizeHostname(hostnameInput: string): string {
   return withoutZone.toLowerCase().replace(/\.+$/, "");
 }
 
+export function isPublicIpLiteral(hostnameInput: string): boolean {
+  if (hostnameInput !== hostnameInput.trim() || /[\[\]%]/.test(hostnameInput)) return false;
+  return isIP(hostnameInput) !== 0 && !isPrivateHostname(hostnameInput);
+}
+
+function isFakeIpAddress(address: string): boolean {
+  const hostname = normalizeHostname(address);
+  const family = isIP(hostname);
+  if (family === 4) return FAKE_IP.check(hostname, "ipv4");
+  // BlockList folds IPv4-mapped IPv6 addresses before matching, just as it
+  // does for the private-address policy above.
+  return family === 6 && FAKE_IP.check(hostname, "ipv6");
+}
+
 export function isPrivateHostname(hostnameInput: string): boolean {
   const hostname = normalizeHostname(hostnameInput);
   if (hostname === "") return true;
@@ -95,11 +111,47 @@ export function isPrivateHostname(hostnameInput: string): boolean {
   return false;
 }
 
+export type TrustedLookupFn = (
+  hostname: string,
+  trustedDnsServers: readonly string[],
+) => Promise<ReadonlyArray<{ address: string }>>;
+
+function isNoDnsAnswer(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code === "ENODATA" || code === "ENOTFOUND";
+}
+
+/** Resolve both address families through only the explicitly configured servers. */
+const resolveTrusted: TrustedLookupFn = async (hostname, trustedDnsServers) => {
+  const resolver = new Resolver();
+  resolver.setServers([...trustedDnsServers]);
+  const results = await Promise.allSettled([resolver.resolve4(hostname), resolver.resolve6(hostname)]);
+  const addresses: Array<{ address: string }> = [];
+  for (const result of results) {
+    if (result.status === "fulfilled") {
+      addresses.push(...result.value.map((address) => ({ address })));
+    } else if (!isNoDnsAnswer(result.reason)) {
+      throw result.reason;
+    }
+  }
+  return addresses;
+};
+
+function fakeIpUnverified(hostname: string, cause?: unknown): FreeWebError {
+  return new FreeWebError(
+    "FAKE_IP_DNS_UNVERIFIED",
+    `Cannot verify ${hostname} through trusted DNS after system DNS returned only fake-ip addresses; check trusted DNS availability and retry. Configuration changes require MCP restart or session reload`,
+    { cause, retryable: true },
+  );
+}
+
 export async function assertPublicHttpUrl(
   input: string,
   options: {
     allowPrivate?: boolean;
     lookupFn?: typeof lookup;
+    trustedDnsServers?: readonly string[];
+    trustedLookupFn?: TrustedLookupFn;
   } = {},
 ): Promise<URL> {
   let url: URL;
@@ -136,6 +188,31 @@ export async function assertPublicHttpUrl(
   if (addresses.length === 0) {
     throw new FreeWebError("PRIVATE_URL_BLOCKED", `${hostname} does not resolve to any address`);
   }
+  if (addresses.every(({ address }) => isFakeIpAddress(address))) {
+    const trustedDnsServers = options.trustedDnsServers ?? [];
+    if (trustedDnsServers.length === 0) {
+      throw new FreeWebError(
+        "FAKE_IP_DNS_DETECTED",
+        `System DNS returned only fake-ip addresses (198.18.0.0/15) for ${hostname}. Configure network.trustedDnsServers or FREEWEB_TRUSTED_DNS_SERVERS with public DNS server IP literals, then restart the MCP server or reload the session`,
+        { retryable: false },
+      );
+    }
+
+    let trustedAddresses: ReadonlyArray<{ address: string }>;
+    try {
+      trustedAddresses = await (options.trustedLookupFn ?? resolveTrusted)(hostname, trustedDnsServers);
+    } catch (error) {
+      throw fakeIpUnverified(hostname, error);
+    }
+    if (trustedAddresses.length === 0) throw fakeIpUnverified(hostname);
+    if (trustedAddresses.some(({ address }) => !isPublicIpLiteral(address))) {
+      throw new FreeWebError("PRIVATE_URL_BLOCKED", "URL resolves to a local or private-network address through trusted DNS");
+    }
+    return url;
+  }
+
+  // Mixed fake-ip/public and fake-ip/private answers are ambiguous and never
+  // qualify for trusted resolution.
   if (addresses.some(({ address }) => isPrivateHostname(address))) {
     throw new FreeWebError("PRIVATE_URL_BLOCKED", "URL resolves to a local or private-network address");
   }

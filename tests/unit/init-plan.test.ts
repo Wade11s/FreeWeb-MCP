@@ -70,6 +70,7 @@ describe("init plan construction", () => {
 
   it("plans permission enforcement without content changes for an already-complete valid config", () => {
     const raw = {
+      network: { trustedDnsServers: [] },
       tinyfish: { freeOnlyConfirmed: false, searchTimeoutMs: 10_000, fetchTimeoutMs: 150_000 },
       firecrawl: { binary: "/bin/firecrawl-local", host: "127.0.0.1" as const, port: 0, allowPrivate: false, searchFallback: false, startupTimeoutMs: 30_000, shutdownTimeoutMs: 5000 },
       ego: { binary: "ego-browser", unrestricted: false, defaultProfile: "Default", allowedProfiles: ["Default"], allowPrivate: false, taskIdleTimeoutMs: 900_000, taskMaxAgeMs: 3_600_000, maxTasks: 3, maxNodeProcesses: 2 },
