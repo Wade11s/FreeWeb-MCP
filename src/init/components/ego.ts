@@ -137,11 +137,12 @@ export function createEgoComponent(deps: EgoComponentDeps = {}): InitComponent {
     } else if (detection.installed) {
       description = "keep the existing ego-browser installation unchanged (no upgrade); wait for your explicit confirmation that GUI onboarding is complete, then verify the command and native Node.js entry";
     } else {
-      description = `after plan confirmation, ask before opening the official ego-lite download page (${EGO_DOWNLOAD_URL}); declining skips this optional handoff with no browser launch; accepting leaves installation, GUI onboarding, and every browser-data import choice to you; verification waits for a separate explicit confirmation; guidance: ${EGO_INSTALL_REFERENCE_URL}`;
+      description = `after selecting this step, ask before opening the official ego-lite download page (${EGO_DOWNLOAD_URL}); declining skips this optional handoff with no browser launch; accepting leaves installation, GUI onboarding, and every browser-data import choice to you; verification waits for a separate explicit confirmation; guidance: ${EGO_INSTALL_REFERENCE_URL}`;
     }
     return [{
       component: "ego" as const,
       action: "handoff" as const,
+      stage: "component" as const,
       description,
       required: false,
       selected: true,
@@ -189,13 +190,19 @@ export function createEgoComponent(deps: EgoComponentDeps = {}): InitComponent {
       };
     }
 
+    let openedDownloadPage = false;
     if (!input.detection.installed) {
       // Optional setup must be skippable before any side effect. Unlike the
       // later onboarding question, a no here returns Skipped and no opener
       // process is started, matching the TinyFish optional-setup pattern.
-      const openerConfirmed = await input.io.prompt.confirm(
-        `Open the official ego-lite download page (${EGO_DOWNLOAD_URL}) now? Choose no to skip this optional handoff and continue Initialization. [y/N]`,
-      );
+      const openerConfirmed = await input.io.prompt.choose(
+        `Open the official ego-lite download page (${EGO_DOWNLOAD_URL}) now?`,
+        [
+          { id: "open", label: "Open the official download page; I will install it myself" },
+          { id: "skip", label: "Skip without opening a browser" },
+        ],
+        "skip",
+      ) === "open";
       if (!openerConfirmed) {
         return {
           ...base,
@@ -231,23 +238,29 @@ export function createEgoComponent(deps: EgoComponentDeps = {}): InitComponent {
         };
       }
       input.io.writeLine(`Opened the official ego-lite download page (${EGO_DOWNLOAD_URL}) in your browser; no installer was executed.`);
+      openedDownloadPage = true;
     }
 
-    const onboardingConfirmed = await input.io.prompt.confirm(
-      "Have you installed ego lite and completed its GUI onboarding yourself, including all Browser Profile, cookie, password, session, bookmark, and extension import choices? Continue only when ego-browser is available on PATH. [y/N]",
-    );
+    const onboardingConfirmed = await input.io.prompt.choose(
+      "Have you installed ego lite and completed its GUI onboarding yourself, including every Browser Profile and browser-data import choice?",
+      [
+        { id: "verify", label: "Onboarding is complete and ego-browser is on PATH; verify now" },
+        { id: "pending", label: "Not yet; leave ego-lite pending without running verification" },
+      ],
+      "pending",
+    ) === "verify";
     if (!onboardingConfirmed) {
       return {
         ...base,
         outcome: "Pending",
         warnings: [],
-        detail: "GUI installation/onboarding was not confirmed; no command or native-entry verification was run. Rerun init after you finish onboarding.",
+        detail: `GUI installation/onboarding was not confirmed; no command or native-entry verification was run.${openedDownloadPage ? ` The official download page (${EGO_DOWNLOAD_URL}) was opened during this step.` : ""} Rerun init after you finish onboarding.`,
       };
     }
 
     const resolved = await resolveAfterOnboarding(input, fs);
     if (!resolved.ok) {
-      return { ...base, outcome: "Failed", warnings: [], detail: resolved.message };
+      return { ...base, outcome: "Failed", warnings: [], detail: `${resolved.message}${openedDownloadPage ? `; the official download page (${EGO_DOWNLOAD_URL}) was opened during this step` : ""}` };
     }
     const verification = await verify({ binary: resolved.binary });
     if (!verification.ok) {
@@ -255,7 +268,7 @@ export function createEgoComponent(deps: EgoComponentDeps = {}): InitComponent {
         ...base,
         outcome: "Failed",
         warnings: [],
-        detail: `verification failed after onboarding confirmation: ${verification.message ?? "unknown error"}`,
+        detail: `verification failed after onboarding confirmation: ${verification.message ?? "unknown error"}${openedDownloadPage ? `; the official download page (${EGO_DOWNLOAD_URL}) was opened during this step` : ""}`,
       };
     }
 
@@ -274,12 +287,21 @@ export function createEgoComponent(deps: EgoComponentDeps = {}): InitComponent {
       ...base,
       outcome: "Installed",
       warnings: [],
-      detail: `existing or newly installed ego-browser at ${resolved.binary} verified on ${platform} after your onboarding confirmation (command and native Node.js entry); no upgrade, import, quarantine change, or elevation was performed; Browse use still depends on your GUI choices`,
+      detail: `existing or newly installed ego-browser at ${resolved.binary} verified on ${platform} after your onboarding confirmation (command and native Node.js entry); no upgrade, import, quarantine change, or elevation was performed; Browse use still depends on your GUI choices${openedDownloadPage ? `; the official download page (${EGO_DOWNLOAD_URL}) was opened during this step` : ""}`,
       ...(pathWasExplicit || repairApplied || alreadyProposed ? {} : { configPatches: [{ setting: "ego.binary", value: resolved.binary }] }),
     };
   };
 
-  return { id: "ego", label: "ego-lite", required: false, detect, plan, verify, execute };
+  return {
+    id: "ego",
+    label: "ego-lite",
+    required: false,
+    actionLabel: (detection) => detection.installed ? "Configure or verify ego-lite" : "Set up ego-lite",
+    detect,
+    plan,
+    verify,
+    execute,
+  };
 }
 
 /** The command runner receives only the same filtered child environment other providers use. */

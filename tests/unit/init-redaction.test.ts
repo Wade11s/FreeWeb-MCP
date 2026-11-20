@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { redactInitText, redactInitIo } from "../../src/init/redaction.js";
+import { redactInitText, redactInitIo, redactInitValue } from "../../src/init/redaction.js";
 import type { InitIo } from "../../src/init/prompt.js";
 
 const ATTESTATION =
@@ -42,9 +42,9 @@ describe("public phrase exemption", () => {
     const io: InitIo = {
       prompt: {
         interactive: true,
-        confirm: async (question) => {
-          lines.push(`confirm:${question}`);
-          return false;
+        choose: async (question, choices) => {
+          lines.push(`choose:${question}:${choices.map((choice) => choice.label).join("|")}`);
+          return choices[0]!.id;
         },
         close: () => {},
       },
@@ -54,9 +54,22 @@ describe("public phrase exemption", () => {
     const wrapped = redactInitIo(io, { TINYFISH_API_KEY: "hunter2" }, [ATTESTATION]);
     wrapped.writeLine(`leak hunter2 ${ATTESTATION}`);
     wrapped.errorLine("leak hunter2");
-    void wrapped.prompt.confirm("attest hunter2");
+    void wrapped.prompt.choose("choose hunter2", [{ id: "safe", label: "label hunter2" }], "safe");
     expect(lines[0]).toBe(`out:leak [redacted] ${ATTESTATION}`);
     expect(lines[1]).toBe("err:leak [redacted]");
-    expect(lines[2]).toBe("confirm:attest [redacted]");
+    expect(lines[2]).toBe("choose:choose [redacted]:label [redacted]");
+  });
+
+  it("redacts structured fields before JSON serialization escapes credentials", () => {
+    const secret = "quote\" backslash\\ newline\n tab\t end";
+    const value = {
+      detail: `prefix ${secret} suffix`,
+      nested: [{ message: secret, ok: true }, null],
+    };
+    const redacted = redactInitValue(value, { TINYFISH_API_KEY: secret });
+    expect(redacted.detail).toBe("prefix [redacted] suffix");
+    expect(redacted.nested[0]).toEqual({ message: "[redacted]", ok: true });
+    expect(redacted.nested[1]).toBeNull();
+    expect(JSON.stringify(redacted)).not.toContain(secret);
   });
 });

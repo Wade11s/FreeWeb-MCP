@@ -10,9 +10,9 @@ function fakeIo(answers: readonly boolean[]): InitIo & { readonly questions: rea
   return {
     prompt: {
       interactive: true,
-      confirm: async (question) => {
+      choose: async (question, choices, defaultId) => {
         questions.push(question);
-        return remaining.shift() ?? false;
+        return (remaining.shift() ?? false) ? choices[0]!.id : defaultId;
       },
       close: () => {},
     },
@@ -95,7 +95,7 @@ describe("TinyFish Initialization", () => {
     const { result } = await executeTinyFish(
       { TINYFISH_API_KEY: secret },
       { status: "absent" },
-      [true, false],
+      [false],
     );
 
     expect(result.outcome).toBe("Pending");
@@ -104,17 +104,17 @@ describe("TinyFish Initialization", () => {
     expect(JSON.stringify(result)).not.toContain(secret);
   });
 
-  it("skips optional setup without changing configuration or blocking the required baseline", async () => {
-    const { result } = await executeTinyFish(
-      { TINYFISH_API_KEY: "unit-tinyfish-skipped-secret" },
+  it("keeps component execution focused on the attestation after the orchestrator selects setup", async () => {
+    const { result, io } = await executeTinyFish(
+      { TINYFISH_API_KEY: "unit-tinyfish-selected-secret" },
       { status: "absent" },
       [false],
     );
 
-    expect(result.outcome).toBe("Skipped");
-    expect(result.required).toBe(false);
+    expect(result.outcome).toBe("Pending");
+    expect(io.questions).toHaveLength(1);
+    expect(io.questions[0]).toContain(TINYFISH_FREE_ATTESTATION);
     expect(result.configPatches).toBeUndefined();
-    expect(result.detail).toContain("Firecrawl Search Fallback was not enabled");
   });
 
   it("is idempotent when a previous run recorded the attestation", async () => {
@@ -137,8 +137,8 @@ describe("TinyFish Initialization", () => {
     );
 
     expect(detection).toMatchObject({ tinyfishAttested: false });
-    expect(io.questions).toHaveLength(2);
-    expect(io.questions[1]).toContain(TINYFISH_FREE_ATTESTATION);
+    expect(io.questions).toHaveLength(1);
+    expect(io.questions[0]).toContain(TINYFISH_FREE_ATTESTATION);
     expect(result.outcome).toBe("Configured");
     expect(result.configPatches).toEqual([{ setting: "tinyfish.freeOnlyConfirmed", value: true }]);
   });
@@ -176,7 +176,7 @@ describe("TinyFish Initialization", () => {
     const io: InitIo = {
       prompt: {
         interactive: true,
-        confirm: async () => { throw new Error(secret); },
+        choose: async () => { throw new Error(secret); },
         close: () => {},
       },
       writeLine: () => {},
@@ -198,10 +198,9 @@ describe("TinyFish Initialization", () => {
     const io: InitIo = {
       prompt: {
         interactive: true,
-        confirm: async () => {
+        choose: async () => {
           prompts += 1;
-          if (prompts === 2) throw new Error("simulated terminal failure");
-          return true;
+          throw new Error("simulated terminal failure");
         },
         close: () => {},
       },

@@ -1,0 +1,3 @@
+# Human and machine CLI contracts
+
+`doctor` and `init` have separate human and machine presentations of the same run: human output favors grouped, step-at-a-time guidance, while `--json` emits a `schemaVersion: 1` document with stable status and step/check fields. Initialization remains interactive and consent-gated rather than becoming an unattended JSON-command protocol; in JSON mode its prompts and progress use stderr and stdout is reserved for one final report, including cancellation and early failure. The machine schema is a compatibility boundary for agents, so additive changes are preferred and existing fields such as doctor's `ok` and `checks` remain intact; human text may be reorganized without becoming an agent API.

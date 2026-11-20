@@ -65,10 +65,10 @@ function fakeIo(
     io: {
       prompt: {
         interactive: true,
-        confirm: async (question) => {
+        choose: async (question, choices, defaultId) => {
           questions.push(question);
           callCounts.push((peek?.() ?? []).length);
-          return answers[index++] ?? false;
+          return (answers[index++] ?? false) ? choices[0]!.id : defaultId;
         },
         close: () => {},
       },
@@ -155,7 +155,7 @@ describe("ego-lite init detection and plan", () => {
     const items = component.plan({ installed: false, certified: false });
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({ component: "ego", action: "handoff", required: false, selected: true });
-    expect(items[0]!.description).toContain("after plan confirmation");
+    expect(items[0]!.description).toContain("after selecting this step");
     expect(items[0]!.description).toContain(EGO_DOWNLOAD_URL);
     expect(items[0]!.description).toContain(EGO_INSTALL_REFERENCE_URL);
     expect(items[0]!.description).not.toMatch(/ready|configured/i);
@@ -192,7 +192,11 @@ describe("ego-lite init detection and plan", () => {
     const result = await component.execute({
       ...executeInput(detection, { overrides: simulatedPlatform("linux") }),
       io: {
-        prompt: { interactive: true, confirm: async (question) => { prompts.push(question); return true; }, close: () => {} },
+        prompt: {
+          interactive: true,
+          choose: async (question, choices) => { prompts.push(question); return choices[0]!.id; },
+          close: () => {},
+        },
         writeLine: () => {},
         errorLine: () => {},
       },
@@ -235,10 +239,10 @@ describe("ego-lite init handoff and verification", () => {
     const overrides = simulatedPlatform("win32");
     const { io, questions } = fakeIo([true, true]);
     const callCounts: number[] = [];
-    io.prompt.confirm = async (question) => {
+    io.prompt.choose = async (question, choices) => {
       questions.push(question);
       callCounts.push(calls.length);
-      return true;
+      return choices[0]!.id;
     };
 
     const result = await component.execute(executeInput({ installed: false, certified: false }, { io, overrides }));

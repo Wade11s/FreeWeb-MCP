@@ -1,6 +1,6 @@
 {
   "name": "@wade11s/freeweb-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Free-first local Web MCP using Firecrawl Local, TinyFish and ego-lite",
   "type": "module",
   "license": "MIT",

@@ -16,7 +16,11 @@ afterEach(async () => {
 });
 
 const io: InitIo = {
-  prompt: { interactive: true, confirm: async () => true, close: () => {} },
+  prompt: {
+    interactive: true,
+    choose: async (_question, choices) => choices[0]!.id,
+    close: () => {},
+  },
   writeLine: () => {},
   errorLine: () => {},
 };

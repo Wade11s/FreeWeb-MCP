@@ -17,6 +17,7 @@ function detection(overrides: Partial<InitDetection> = {}): InitDetection {
 const componentItems: readonly InitPlanItem[] = [{
   component: "firecrawl",
   action: "verify",
+  stage: "component",
   description: "verify the existing installation with an owned loopback health check (Cloud Off)",
   required: true,
   selected: true,
@@ -38,12 +39,13 @@ describe("init plan construction", () => {
       configPatches: [{ setting: "firecrawl.binary", value: "/bin/firecrawl-local" }],
     }));
     expect(result.recovery).toBeNull();
-    expect(result.items.map((item) => item.action)).toEqual(["verify", "write", "configure"]);
+    expect(result.items.map((item) => item.action)).toEqual(["verify", "write", "verify"]);
     expect(result.items[1]!.description).toContain("conservative defaults");
     expect(result.items[1]!.description).toContain("/cfg/config.json");
     expect(result.items[1]!.description).toContain("detected component settings");
     expect(result.repairs).toEqual([]);
     expect(result.items[2]!.description).toContain("create the data directory at /data with mode 0700");
+    expect(result.items.map((item) => item.stage)).toEqual(["component", "configuration", "doctor"]);
   });
 
   it("carries manual handoff guidance when Firecrawl is not installed", () => {
@@ -54,7 +56,7 @@ describe("init plan construction", () => {
       detections: new Map([["firecrawl", detection({ installed: false, certified: false, binary: undefined, version: undefined })]]),
       componentItems: [{ ...componentItems[0]!, action: "handoff", description: "report official manual installation guidance" }],
     });
-    expect(result.items.map((item) => item.action)).toEqual(["handoff", "write", "configure"]);
+    expect(result.items.map((item) => item.action)).toEqual(["handoff", "write", "verify"]);
     expect(result.items[0]!.description).toContain("manual installation");
     expect(result.items[1]!.description).not.toContain("and record");
   });
@@ -125,7 +127,8 @@ describe("init plan construction", () => {
     expect(result.recovery).toEqual({ reason: "not valid JSON: boom" });
     expect(result.items[1]!.component).toBe("configuration");
     expect(result.items[1]!.action).toBe("write");
-    expect(result.items[1]!.description).toContain("non-overwriting backup");
+    expect(result.items[1]!.description).toContain("only after the backup in Step 1 succeeds");
+    expect(result.items[1]!.description).not.toContain("back up the damaged file");
   });
 
   it("plans backup-and-rebuild recovery for schema-invalid configuration", () => {

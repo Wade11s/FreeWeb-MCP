@@ -49,6 +49,47 @@ export interface InitRunSummary {
   readonly exitCode: number;
 }
 
+/** Stable machine-report step states, independent of human capitalization. */
+export type InitStepStatus = "succeeded" | "skipped" | "pending" | "failed" | "cancelled";
+
+/** One step in the versioned Initialization report emitted by `init --json`. */
+export interface InitStepReport {
+  readonly step: number;
+  readonly id: string;
+  readonly title: string;
+  readonly kind: "inspection" | "component" | "configuration" | "verification";
+  readonly required: boolean;
+  readonly status: InitStepStatus;
+  readonly outcome?: InitOutcome;
+  readonly detail: string;
+  readonly warnings: readonly InitWarning[];
+  readonly attempts: number;
+}
+
+/** Doctor's stable subset embedded in the Initialization report. */
+export interface InitDoctorReport {
+  readonly ok: boolean;
+  readonly checks: readonly import("../doctor.js").DoctorCheck[];
+}
+
+/** Versioned machine output. Human prompts and progress never enter this value. */
+export interface InitRunReport {
+  readonly schemaVersion: 1;
+  readonly command: "init";
+  readonly ok: boolean;
+  readonly status: "succeeded" | "failed" | "cancelled";
+  readonly steps: readonly InitStepReport[];
+  readonly doctor: InitDoctorReport | null;
+  readonly nextSteps: readonly string[];
+  readonly error?: { readonly code: string; readonly message: string };
+}
+
+/** Internal run result; the CLI chooses text or JSON rendering at its boundary. */
+export interface InitExecution {
+  readonly exitCode: number;
+  readonly report: InitRunReport;
+}
+
 /**
  * The single exit-status derivation for Initialization.
  *

@@ -21,6 +21,7 @@ function requiredComponent(): InitComponent {
     id: "firecrawl",
     label: "Required test component",
     required: true,
+    actionLabel: () => "Verify required test component",
     detect: async () => ({ installed: true, certified: true }),
     plan: () => [],
     verify: async () => ({ ok: true }),
@@ -58,6 +59,7 @@ describe("generic init configuration contributions", () => {
       id: "throwaway",
       label: "Throwaway",
       required: false,
+      actionLabel: () => "Configure throwaway",
       detect: async () => ({
         installed: true,
         certified: true,
@@ -74,6 +76,7 @@ describe("generic init configuration contributions", () => {
       plan: (detection) => [{
         component: "throwaway",
         action: "configure",
+        stage: "component",
         description: `configure with ${detection.notes![0]}`,
         required: false,
         selected: true,
@@ -103,9 +106,9 @@ describe("generic init configuration contributions", () => {
     const io: InitIo = {
       prompt: {
         interactive: true,
-        confirm: async (question) => {
+        choose: async (question, choices) => {
           questions.push(question);
-          return true;
+          return question.includes("This step failed") ? "continue" : choices[0]!.id;
         },
         close: () => {},
       },
@@ -142,7 +145,11 @@ describe("init component exception boundary", () => {
     const configPath = join(root, "config.json");
     const output: string[] = [];
     const io: InitIo = {
-      prompt: { interactive: true, confirm: async () => true, close: () => {} },
+      prompt: {
+        interactive: true,
+        choose: async (question, choices) => question.includes("This step failed") ? "continue" : choices[0]!.id,
+        close: () => {},
+      },
       writeLine: (line) => output.push(line),
       errorLine: (line) => output.push(line),
     };
@@ -150,6 +157,7 @@ describe("init component exception boundary", () => {
       id: "throwaway",
       label: "Hostile throwaway",
       required: false,
+      actionLabel: () => "Configure hostile component",
       detect: async () => ({ installed: true, certified: true }),
       plan: () => [],
       verify: async () => ({ ok: true }),
@@ -187,7 +195,11 @@ describe("init configuration credential guard", () => {
       const configPath = join(root, `${testCase.setting}.json`);
       const output: string[] = [];
       const io: InitIo = {
-        prompt: { interactive: true, confirm: async () => true, close: () => {} },
+        prompt: {
+          interactive: true,
+          choose: async (question, choices) => question.includes("This step failed") ? "continue" : choices[0]!.id,
+          close: () => {},
+        },
         writeLine: (line) => output.push(line),
         errorLine: (line) => output.push(line),
       };
@@ -195,6 +207,7 @@ describe("init configuration credential guard", () => {
         id: "throwaway",
         label: "Hostile throwaway",
         required: false,
+        actionLabel: () => "Configure hostile component",
         detect: async () => ({ installed: true, certified: true }),
         plan: () => [],
         verify: async () => ({ ok: true }),

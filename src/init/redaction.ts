@@ -70,6 +70,26 @@ export function redactInitText(
   return result;
 }
 
+/**
+ * Redacts structured values before JSON serialization. Redacting serialized
+ * JSON would miss credentials whose quotes, backslashes, or control
+ * characters are escaped by JSON.stringify.
+ */
+export function redactInitValue<T>(
+  value: T,
+  env: NodeJS.ProcessEnv,
+  publicPhrases: readonly string[] = [],
+): T {
+  if (typeof value === "string") return redactInitText(value, env, publicPhrases) as T;
+  if (Array.isArray(value)) return value.map((item) => redactInitValue(item, env, publicPhrases)) as T;
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, redactInitValue(item, env, publicPhrases)]),
+    ) as T;
+  }
+  return value;
+}
+
 /** Wraps all init output and prompts so no component rendering path bypasses redaction. */
 export function redactInitIo(
   io: InitIo,
@@ -80,7 +100,12 @@ export function redactInitIo(
   return {
     prompt: {
       interactive: io.prompt.interactive,
-      confirm: (question) => io.prompt.confirm(redact(question)),
+      choose: (question, choices, defaultId, options) => io.prompt.choose(
+        redact(question),
+        choices.map((choice) => ({ ...choice, label: redact(choice.label) })),
+        defaultId,
+        options,
+      ),
       close: () => io.prompt.close(),
     },
     writeLine: (line) => io.writeLine(redact(line)),

@@ -123,7 +123,7 @@ export function createFirecrawlComponent(deps: FirecrawlComponentDeps = {}): Ini
     };
 
     // Detection is filesystem-only. Even a bounded --version probe launches
-    // the provider, so it belongs to execute() after plan confirmation.
+    // the provider, so it belongs to execute() after this step is selected.
     // The runtime resolution order is env override, then configured value,
     // then the default name on PATH; detection mirrors it so the plan
     // verifies the binary the server would actually start.
@@ -160,6 +160,7 @@ export function createFirecrawlComponent(deps: FirecrawlComponentDeps = {}): Ini
       return [{
         component: "firecrawl" as const,
         action: "verify" as const,
+        stage: "component" as const,
         description: `verify the existing installation${detection.version ? ` (${detection.version})` : ""} with an owned loopback health check (Cloud Off); Chrome/Chromium is optional and is not required for readiness`,
         required: true,
         selected: true,
@@ -169,6 +170,7 @@ export function createFirecrawlComponent(deps: FirecrawlComponentDeps = {}): Ini
       return [{
         component: "firecrawl" as const,
         action: "install" as const,
+        stage: "component" as const,
         description: `install firecrawl-local ${CERTIFIED_FIRECRAWL_VERSION} from crates.io with \`cargo install firecrawl-local --version ${CERTIFIED_FIRECRAWL_VERSION}\` (version-pinned, never a source branch), then verify it with the same owned loopback Cloud Off health check; Rust, Cargo, and a C compiler must already be installed and are never installed by init; Chrome/Chromium is optional`,
         required: true,
         selected: true,
@@ -177,6 +179,7 @@ export function createFirecrawlComponent(deps: FirecrawlComponentDeps = {}): Ini
     return [{
       component: "firecrawl" as const,
       action: "handoff" as const,
+      stage: "component" as const,
       description: `Firecrawl Local is not installed; automatic installation is not offered on ${platformLabel(currentPlatform)}; report official manual installation guidance (${LOCAL_QUICKSTART}); Chrome/Chromium is optional`,
       required: true,
       selected: true,
@@ -399,7 +402,16 @@ export function createFirecrawlComponent(deps: FirecrawlComponentDeps = {}): Ini
     return missing;
   };
 
-  return { id: "firecrawl", label: "Firecrawl Local", required: true, detect, plan, verify, execute };
+  return {
+    id: "firecrawl",
+    label: "Firecrawl Local",
+    required: true,
+    actionLabel: (detection) => detection.installed ? "Verify the existing Firecrawl Local installation" : "Continue with Firecrawl Local setup",
+    detect,
+    plan,
+    verify,
+    execute,
+  };
 }
 
 const OPTIONAL_CHROME_UNCHECKED = "Chrome/Chromium is an optional enhancement for JavaScript rendering and screenshots; it is not required for readiness";

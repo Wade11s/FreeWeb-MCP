@@ -3,10 +3,11 @@
 Run the final command from an interactive terminal:
 
 ```bash
-freeweb-mcp init
+freeweb-mcp init          # numbered human interaction
+freeweb-mcp init --json   # same interaction; one final JSON report on stdout
 ```
 
-Initialization is explicit and TTY-only. It never runs from MCP startup or `doctor`, and there is no `--yes`, unattended, JSON, or alternate-config-flag mode. `FREEWEB_CONFIG` and the existing configuration-path rules remain authoritative.
+Initialization is explicit and TTY-only. It never runs from MCP startup or `doctor`, and there is no `--yes`, unattended, or alternate-config-flag mode. JSON changes only the report presentation; it does not bypass consent. `FREEWEB_CONFIG` and the existing configuration-path rules remain authoritative.
 
 ## Prerequisites and support
 
@@ -21,22 +22,27 @@ Every platform needs Node.js 22.12+ and a usable `firecrawl-local` for the requi
 
 Provider support does not imply live platform certification. See the [macOS live-run procedure](macos-live-run.md) and its [unexecuted evidence scaffold](macos-live-evidence.md). Windows, Debian/Ubuntu, other Linux distributions, and every other non-macOS platform must remain documented as simulated-only until separate live evidence exists.
 
-## One plan and shared safety boundary
+## Initialization Steps and shared safety boundary
 
-The default plan selects all supported components:
+Each step presents only its own current state, action, warnings, and numbered choices:
 
-- **Firecrawl Local is required** and cannot be deselected.
-- **TinyFish Search/Fetch is optional** and can be declined without failing a usable required baseline.
-- **ego-lite is optional** on macOS and Windows and can be declined. On unsupported platforms it is reported `Skipped` without an opener or verification launch.
+- **Firecrawl Local is required.** Its default is Quit; verification or installation must be selected explicitly.
+- **TinyFish Search/Fetch is optional.** Its safe default is Skip, and skipping does not fail a usable required baseline.
+- **ego-lite is optional** on macOS and Windows. Its safe default is Skip; unsupported platforms never launch an opener or verification.
+- **Configuration and Doctor are separate required steps.** Neither runs without its own selection.
 
 The journey uses the same order for every selection:
 
-1. Classify configuration and perform filesystem/environment-only provider detection.
-2. Display all component actions, configuration changes, warnings, and any exact old → new path repairs.
-3. Confirm the plan before provider probes, installation, opener launch, or writes. A damaged configuration instead requires backup-and-rebuild consent before any provider operation.
-4. Confirm each proposed path repair independently. Optional components then obtain their own setup/handoff and human-readiness decisions.
-5. Collect non-secret component contributions and apply them through one configuration safety boundary and at most one atomic content write. Existing explicit values remain unchanged except individually confirmed repairs.
-6. Run the local doctor once after the configuration step, print one classified summary, and show `freeweb-mcp print-config` guidance. The MCP server is never started and other MCP clients are never scanned or modified.
+1. **Inspect environment.** Classify configuration and perform filesystem/environment-only provider detection. A damaged file requires explicit backup consent before any provider action.
+2. **Handle one provider at a time.** Show Firecrawl, TinyFish, then ego-lite. Confirm old → new repairs within the owning provider step, and keep optional setup/handoff and human-readiness decisions separate.
+3. **Write configuration once.** Collect non-secret contributions and apply them through one configuration safety boundary and at most one atomic content write per attempt. Existing explicit values remain unchanged except individually confirmed repairs.
+4. **Run Doctor after selection.** Print one classified summary and show `freeweb-mcp print-config` guidance. The MCP server is never started and other MCP clients are never scanned or modified.
+
+Empty input selects the safe default, invalid numbered input is explained and retried, and terminal EOF cannot grant consent. A failed operation offers Retry, Continue, or Quit; nothing retries automatically. Quit prevents all later actions and any pending configuration write. Earlier external changes are not rolled back, so the partial report lists completed steps rather than claiming that nothing changed.
+
+## Machine-readable report
+
+With `--json`, prompts and progress use stderr and stdout contains one final `schemaVersion: 1` document. Stdout can therefore be redirected while stdin and stderr stay attached to the terminal. The report has `status: succeeded | failed | cancelled`, ordered `steps` with stable ids/statuses/outcomes/attempt counts, `doctor` or `null`, `nextSteps`, and an optional structured `error`. Non-TTY refusal and cancellation also produce reports. It is a result format, not a JSON command-input or unattended protocol.
 
 ## Provider-specific human decisions
 
@@ -75,7 +81,7 @@ Official references:
 | Any selected installation, write, opener, or verification `Failed` | `1` |
 | Required Firecrawl or base configuration is `Pending`, `Failed`, skipped, or missing from the result set | `1` |
 | A required final doctor check fails or doctor cannot run | `1` |
-| Plan/damaged-configuration confirmation is declined, terminal input ends, or invocation is non-TTY | `1` before the corresponding side effects |
+| Step/damaged-configuration confirmation is declined, terminal input ends, or invocation is non-TTY | `1` before the corresponding pending side effects |
 
 A successful summary means the **Initialization command** succeeded. It does not mean every optional capability, TinyFish account/service, or Browse path is ready; read each optional outcome and its detail.
 

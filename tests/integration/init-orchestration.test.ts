@@ -54,10 +54,26 @@ interface FakeIo {
 
 function fakeIo(answers: readonly string[], interactive = true): FakeIo {
   const input = new PassThrough();
-  for (const answer of answers) input.write(`${answer}\n`);
+  const remaining = [...answers];
   const outLines: string[] = [];
   const errLines: string[] = [];
-  const prompt = createPrompt({ input, write: (chunk) => outLines.push(chunk), interactive });
+  const prompt = createPrompt({
+    input,
+    write: (chunk) => {
+      outLines.push(chunk);
+      if (!chunk.includes("Choose [") || answers.length === 0) return;
+      // Legacy scenarios supply their original consent answers. Newly added
+      // configuration/Doctor steps default to their affirmative option, while
+      // a new failure menu continues just as the old orchestration did.
+      const answer = chunk.includes("This step failed")
+        ? "2"
+        : remaining.length > 0
+          ? remaining.shift()!
+          : "1";
+      queueMicrotask(() => input.write(`${answer}\n`));
+    },
+    interactive,
+  });
   return {
     input,
     io: {
@@ -177,8 +193,8 @@ describe("init gates", () => {
     const code = await runInit(fake.io, deps());
     expect(code).toBe(1);
     expect(fake.err()).toContain("canceled before any changes were made");
-    expect(fake.out()).toContain("FreeWeb-MCP initialization plan:");
-    expect(fake.out()).toContain("[required] Firecrawl Local:");
+    expect(fake.out()).toContain("Step 2/4 — Firecrawl Local (required)");
+    expect(fake.out()).toContain("Action: verify the existing installation");
     expect(existsSync(configPath)).toBe(false);
     expect(await readLogLines(join(root, "firecrawl.log"))).toEqual([]);
   });
@@ -394,7 +410,7 @@ describe("init Firecrawl automatic installation", () => {
     const second = fakeIo(["y", "y"]);
     expect(await runInit(second.io, initDeps())).toBe(0);
     expect(second.out()).toContain(`firecrawl.binary: ${staleBinary} -> ${binary}`);
-    expect(second.out()).toContain(`Update firecrawl.binary from ${staleBinary} to ${binary}`);
+    expect(second.out()).toContain(`Repair firecrawl.binary: ${staleBinary} -> ${binary}`);
     expect(second.out()).toContain("applied 1 confirmed repair");
     expect(((await readConfigFile()).firecrawl as Record<string, unknown>).binary).toBe(binary);
     expect(commands.some((call) => call.startsWith("cargo install"))).toBe(false);
@@ -433,7 +449,8 @@ describe("init Firecrawl automatic installation", () => {
     });
     const first = fakeIo(["y"]);
     expect(await runInit(first.io, deps({ components: [component], env: baseEnv({ CARGO_HOME: cargoHome }) }))).toBe(0);
-    expect(first.out()).toContain("[required] Firecrawl Local: install firecrawl-local 0.1.0 from crates.io");
+    expect(first.out()).toContain("Step 2/4 — Firecrawl Local (required)");
+    expect(first.out()).toContain("Action: install firecrawl-local 0.1.0 from crates.io");
     expect(first.out()).toContain(`cargo install firecrawl-local --version ${CERTIFIED_FIRECRAWL_VERSION}`);
     expect(first.out()).toContain("Firecrawl Local: Installed");
     expect(((await readConfigFile()).firecrawl as Record<string, unknown>).binary).toBe(binary);
@@ -506,7 +523,7 @@ describe("init existing configuration handling", () => {
     const code = await runInit(fake.io, deps());
     expect(code).toBe(0);
     expect(fake.out()).toContain("firecrawl.binary: /gone/firecrawl-local -> " + binary);
-    expect(fake.out()).toContain("Update firecrawl.binary from /gone/firecrawl-local to " + binary);
+    expect(fake.out()).toContain("Repair firecrawl.binary: /gone/firecrawl-local -> " + binary);
     expect(((await readConfigFile()).firecrawl as Record<string, unknown>).binary).toBe(binary);
     expect(fake.out()).toContain("Firecrawl Local: Installed");
   });
@@ -673,6 +690,6 @@ describe("init interruption and rerun recovery", () => {
     expect(fake.out()).toContain("FAIL data-directory: simulated mkdir EACCES");
     expect(fake.out()).not.toContain(`FAIL data-directory: ${dataDir}`);
     expect(fake.out()).toContain(`PASS data-directory: ${dataDir}`);
-    expect(fake.out()).toContain("Initialization did not complete");
+    expect(fake.out()).toContain("Initialization command did not complete successfully");
   });
 });

@@ -177,10 +177,12 @@ function requiredComponent(outcome: RequiredReadiness, uncertified: boolean): In
     id: "firecrawl",
     label: "Firecrawl Local",
     required: true,
+    actionLabel: () => "Verify required Firecrawl",
     detect: async () => ({ installed: true, certified: !uncertified }),
     plan: () => [{
       component: "firecrawl",
       action: "verify",
+      stage: "component",
       description: "verify required Firecrawl",
       required: true,
       selected: true,
@@ -208,21 +210,19 @@ function optionalComponent(
     id,
     label,
     required: false,
+    actionLabel: () => `Configure ${label}`,
     detect: async () => ({ installed: true, certified: true }),
     plan: () => [{
       component: id,
       action: "configure",
+      stage: "component",
       description: `default-selected optional ${label}`,
       required: false,
       selected: true,
     }],
     verify: async () => ({ ok: decision !== "failed" }),
-    execute: async ({ io }) => {
-      const accepted = await io.prompt.confirm(`Select optional ${label}? [y/N]`);
+    execute: async () => {
       const base = { component: id, label, required: false } as const;
-      if (!accepted) {
-        return { ...base, outcome: "Skipped", selected: false, warnings: [], detail: "matrix declined" };
-      }
       const outcome: InitOutcome = decision === "ready"
         ? readyOutcome
         : decision === "pending"
@@ -245,9 +245,13 @@ function fakeIo(answers: readonly boolean[]): { io: InitIo; output: string[]; qu
     io: {
       prompt: {
         interactive: true,
-        confirm: async (question) => {
+        choose: async (question, choices, defaultId) => {
           questions.push(question);
-          return remaining.shift() ?? false;
+          if (question.startsWith("What do you want to do with")) {
+            return (remaining.shift() ?? false) ? "run" : defaultId;
+          }
+          if (question.includes("This step failed")) return "continue";
+          return choices.some((choice) => choice.id === "run") ? "run" : defaultId;
         },
         close: () => {},
       },
@@ -309,10 +313,13 @@ describe("combined init component/readiness/confirmation matrix", () => {
         const summaryLine = fake.output.find((line) => line.startsWith(`  ${label}: `));
         expect(summaryLine, label).toContain(`${label}: ${outcome}`);
       }
-      expect(output).toContain("[required] Firecrawl Local: verify required Firecrawl");
-      expect(output).toContain("[optional] TinyFish Search/Fetch: default-selected optional TinyFish Search/Fetch");
-      expect(output).toContain("[optional] ego-lite: default-selected optional ego-lite");
-      expect(output).toContain("freeweb-mcp print-config");
+      expect(output).toContain("Step 2/6 — Firecrawl Local (required)");
+      expect(output).toContain("Action: verify required Firecrawl");
+      expect(output).toContain("Step 3/6 — TinyFish Search/Fetch (optional)");
+      expect(output).toContain("Action: default-selected optional TinyFish Search/Fetch");
+      expect(output).toContain("Step 4/6 — ego-lite (optional)");
+      expect(output).toContain("Action: default-selected optional ego-lite");
+      if (row.expected.exitCode === 0) expect(output).toContain("freeweb-mcp print-config");
       expect(output).toContain(row.expected.exitCode === 0
         ? "Result: Initialization command succeeded"
         : "Result: Initialization command did not complete successfully");

@@ -5,9 +5,13 @@ import type { InitComponentId, InitWarning } from "./outcomes.js";
 /** The action kinds an Initialization plan item can describe. */
 export type InitAction = "detect" | "verify" | "configure" | "write" | "handoff" | "install";
 
+/** Stable display/execution stage; never derive this from description text. */
+export type InitPlanStage = "component" | "configuration" | "doctor";
+
 export interface InitPlanItem {
   readonly component: InitComponentId;
   readonly action: InitAction;
+  readonly stage: InitPlanStage;
   readonly description: string;
   readonly required: boolean;
   readonly selected: boolean;
@@ -47,8 +51,9 @@ export function buildInitPlan(context: InitPlanContext): InitPlan {
   const items: InitPlanItem[] = [...componentItems];
   const includeDoctor = (): void => {
     items.push({
-      component: "configuration",
-      action: "configure",
+      component: "doctor",
+      action: "verify",
+      stage: "doctor",
       description: `run local doctor checks; create the data directory at ${dataDir} with mode 0700 if it is absent`,
       required: true,
       selected: true,
@@ -62,7 +67,8 @@ export function buildInitPlan(context: InitPlanContext): InitPlan {
     items.push({
       component: "configuration",
       action: "write",
-      description: `back up the damaged file to a non-overwriting backup, then rebuild conservative configuration at ${configPath}`,
+      stage: "configuration",
+      description: `rebuild conservative configuration at ${configPath} only after the backup in Step 1 succeeds; a failed backup leaves the damaged file unchanged and marks this step failed`,
       required: true,
       selected: true,
     });
@@ -74,6 +80,7 @@ export function buildInitPlan(context: InitPlanContext): InitPlan {
     items.push({
       component: "configuration",
       action: "write",
+      stage: "configuration",
       description: `write new configuration with conservative defaults (no private access, no Search Fallback, no Unrestricted Browse) to ${configPath}${detectionPatches.length > 0 ? " and apply detected component settings" : ""}`,
       required: true,
       selected: true,
@@ -88,6 +95,7 @@ export function buildInitPlan(context: InitPlanContext): InitPlan {
     items.push({
       component: "configuration",
       action: "write",
+      stage: "configuration",
       description: repairs.length > 0
         ? `apply confirmed repairs and component settings, and add ${completed.added.length} missing safe default${completed.added.length === 1 ? "" : "s"} to ${configPath}; every explicit value is preserved`
         : `apply component settings and add ${completed.added.length} missing safe default${completed.added.length === 1 ? "" : "s"} to ${configPath}; every explicit value is preserved`,
@@ -98,6 +106,7 @@ export function buildInitPlan(context: InitPlanContext): InitPlan {
     items.push({
       component: "configuration",
       action: "configure",
+      stage: "configuration",
       description: `configuration at ${configPath} is already complete; no content changes will be made, but file mode 0600 and directory mode 0700 will be enforced`,
       required: true,
       selected: true,

@@ -102,13 +102,13 @@ async function cliWithPackage(packageJson: unknown): Promise<string> {
 }
 
 describe("doctor text output", () => {
-  it("reports every check and the redacted configuration through the built CLI", async () => {
+  it("groups every check and shows redacted configuration only when requested", async () => {
     const invocations = join(root, "invocations.txt");
     const firecrawl = await fakeBinary("firecrawl-local", "firecrawl-local 0.1.0", invocations);
     const ego = await fakeBinary("ego-browser", "ego-browser 1.2.3", invocations);
     await writeConfig({ firecrawl: { binary: firecrawl }, ego: { binary: ego } });
 
-    const result = runCli(["doctor"], {
+    const result = runCli(["doctor", "--show-config"], {
       TINYFISH_API_KEY: injectedKey,
       FREEWEB_TINYFISH_FREE_ONLY_CONFIRMED: "true",
     });
@@ -116,15 +116,16 @@ describe("doctor text output", () => {
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
     const lines = result.stdout.split("\n");
-    expect(lines).toContain(`PASS node: ${process.version}`);
-    expect(lines).toContain("PASS firecrawl-local: firecrawl-local 0.1.0");
-    expect(lines).toContain("PASS ego-browser: ego-browser 1.2.3");
-    expect(lines).toContain("PASS tinyfish: Enabled by explicit free-only account attestation; no wallet request was made");
-    expect(lines).toContain(`PASS data-directory: ${join(home, "data")}`);
-    expect(lines).toContain("Result: ok");
-    expect(result.stdout).toContain("Configuration:");
+    expect(lines).toContain(`  PASS Node.js runtime: ${process.version}`);
+    expect(lines).toContain("  PASS Firecrawl Local: firecrawl-local 0.1.0");
+    expect(lines).toContain("  PASS ego-lite command: ego-browser 1.2.3");
+    expect(lines).toContain("  PASS TinyFish Search/Fetch: Enabled by explicit free-only account attestation; no wallet request was made");
+    expect(lines).toContain(`  PASS Data directory: ${join(home, "data")}`);
+    expect(lines).toContain("Status: READY");
+    expect(result.stdout).toContain("Configuration (secrets redacted)");
 
-    const printed = JSON.parse(result.stdout.slice(result.stdout.indexOf("Configuration:\n") + "Configuration:\n".length)) as {
+    const marker = "Configuration (secrets redacted)\n";
+    const printed = JSON.parse(result.stdout.slice(result.stdout.indexOf(marker) + marker.length)) as {
       dataDir: string;
       tinyfish: { apiKey?: string };
     };
@@ -146,10 +147,10 @@ describe("doctor text output", () => {
 
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("PASS firecrawl-local: firecrawl-local 9.9.9");
-    expect(result.stdout).toContain("  warning: Only Firecrawl Local v0.1.0 is fully certified");
-    expect(result.stdout).toContain("WARN tinyfish: Disabled: TINYFISH_API_KEY is not set");
-    expect(result.stdout).toContain("Result: ok");
+    expect(result.stdout).toContain("PASS Firecrawl Local: firecrawl-local 9.9.9");
+    expect(result.stdout).toContain("Warning: Only Firecrawl Local v0.1.0 is fully certified");
+    expect(result.stdout).toContain("WARN TinyFish Search/Fetch: Disabled: TINYFISH_API_KEY is not set");
+    expect(result.stdout).toContain("Status: READY");
   });
 
   it("fails with exit code 1 when a required check fails", async () => {
@@ -160,8 +161,8 @@ describe("doctor text output", () => {
     const text = runCli(["doctor"]);
     expect(text.status).toBe(1);
     expect(text.stderr).toBe("");
-    expect(text.stdout).toContain(`FAIL firecrawl-local: Command failed: ${firecrawl} --version`);
-    expect(text.stdout).toContain("Result: failed");
+    expect(text.stdout).toContain(`FAIL Firecrawl Local: Command failed: ${firecrawl} --version`);
+    expect(text.stdout).toContain("Status: ACTION REQUIRED");
 
     const json = runCli(["doctor", "--json"]);
     expect(json.status).toBe(1);
@@ -181,8 +182,8 @@ describe("doctor JSON output", () => {
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.stdout.trimStart().startsWith("{")).toBe(true);
-    expect(result.stdout).not.toContain("PASS");
-    expect(result.stdout).not.toContain("Configuration:");
+    expect(result.stdout).not.toContain("FreeWeb-MCP Doctor\nStatus:");
+    expect(result.stdout).not.toContain("Configuration (secrets redacted)");
     const report = JSON.parse(result.stdout) as {
       ok: boolean;
       checks: { name: string; ok: boolean; required: boolean; version?: string }[];
@@ -194,13 +195,25 @@ describe("doctor JSON output", () => {
     expect(report.checks.find((check) => check.name === "tinyfish")).toMatchObject({ ok: false, required: false });
   });
 
+  it("adds redacted configuration to JSON only with --show-config", async () => {
+    await writeReadyConfig();
+    const plain = JSON.parse(runCli(["doctor", "--json"]).stdout) as { config?: unknown };
+    expect(plain.config).toBeUndefined();
+
+    const result = runCli(["doctor", "--json", "--show-config"], { TINYFISH_API_KEY: injectedKey });
+    expect(result.status).toBe(0);
+    const report = JSON.parse(result.stdout) as { config: { tinyfish: { apiKey?: string } } };
+    expect(report.config.tinyfish.apiKey).toBe("[redacted]");
+    expect(result.stdout).not.toContain(injectedKey);
+  });
+
   it("keeps the report parseable when business configuration is invalid", async () => {
     await mkdir(dirname(configPath), { recursive: true });
     await writeFile(configPath, "{ not valid json");
 
     const json = runCli(["doctor", "--json"]);
     expect(json.status).toBe(1);
-    expect(json.stdout).not.toContain("PASS");
+    expect(json.stdout).not.toContain("FreeWeb-MCP Doctor\nStatus:");
     expect(json.stdout).not.toContain("error:");
     const report = JSON.parse(json.stdout) as { ok: boolean; checks: { name: string; ok: boolean; required: boolean; message?: string }[] };
     expect(report.ok).toBe(false);
@@ -211,8 +224,14 @@ describe("doctor JSON output", () => {
 
     const text = runCli(["doctor"]);
     expect(text.status).toBe(1);
-    expect(text.stdout).toBe("");
-    expect(text.stderr).toContain(configPath);
+    expect(text.stdout).toContain("FAIL Configuration:");
+    expect(text.stdout).toContain(configPath);
+    expect(text.stderr).toBe("");
+
+    const withConfig = runCli(["doctor", "--show-config"]);
+    expect(withConfig.stdout).toContain("Configuration unavailable:");
+    expect(withConfig.stdout).toContain(configPath);
+    expect(withConfig.stdout).not.toContain("use --show-config to display it");
   });
 
   it("reports schema violations as a configuration failure", async () => {
@@ -234,9 +253,10 @@ describe("doctor runtime floor", () => {
     const text = runCli(["doctor"], {}, strictCli);
     expect(text.status).toBe(1);
     expect(text.stderr).toBe("");
-    expect(text.stdout).toContain("FAIL node: Node.js 99.0.0 or newer is required");
-    expect(text.stdout).toContain("PASS firecrawl-local");
-    expect(text.stdout).toContain("Result: failed");
+    expect(text.stdout).toContain("FAIL Node.js runtime:");
+    expect(text.stdout).toContain("Node.js 99.0.0 or newer is required");
+    expect(text.stdout).toContain("PASS Firecrawl Local");
+    expect(text.stdout).toContain("Status: ACTION REQUIRED");
 
     const json = runCli(["doctor", "--json"], {}, strictCli);
     expect(json.status).toBe(1);

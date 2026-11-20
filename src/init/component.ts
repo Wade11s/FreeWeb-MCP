@@ -24,7 +24,7 @@ export interface InitConfigRepair {
 /**
  * Read-only environment detection for one provider component. Detection is
  * filesystem/environment inspection only: it never launches a provider,
- * installs anything, or writes a file before the plan is confirmed.
+ * installs anything, or writes a file before its Initialization Step is selected.
  *
  * `configPatches` are applied to new configuration or to fill an omitted
  * setting; `repairs` require separate old → new confirmation. Neither may
@@ -87,8 +87,9 @@ export interface InitExecuteInput {
 
 /**
  * One provider behind Initialization. The orchestrator calls detect and plan
- * before any confirmation, then execute after it. execute owns confirmed
- * probes, verification, installation, and component-specific prompts.
+ * during read-only inspection, then execute only after this component's step
+ * and any repairs are selected. execute owns confirmed probes, verification,
+ * installation, and component-specific prompts.
  *
  * Results may return `configPatches`; these are combined with detection
  * patches and confirmed repairs and applied in one shared write after every
@@ -113,6 +114,8 @@ export interface InitComponent {
   readonly publicPhrases?: readonly string[];
   /** Required components gate the run's exit status. */
   readonly required: boolean;
+  /** Human action for this component's step; provider policy stays out of the orchestrator. */
+  actionLabel(detection: InitDetection): string;
   detect(env: NodeJS.ProcessEnv, classification: ConfigClassification): Promise<InitDetection>;
   plan(detection: InitDetection): readonly InitPlanItem[];
   /** Verification with owned resources only (loopback, owned port, Cloud Off). */

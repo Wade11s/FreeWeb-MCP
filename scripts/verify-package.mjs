@@ -238,6 +238,7 @@ async function main() {
     // entry per check, and a status that matches the report.
     const doctor = runInstalled(["doctor", "--json"], env);
     const report = JSON.parse(doctor.stdout);
+    check(report.schemaVersion === 1, "doctor --json did not emit schemaVersion 1");
     check(Array.isArray(report.checks) && report.checks.length > 0, "doctor --json did not emit a report");
     for (const name of ["node", "firecrawl-local", "ego-browser", "tinyfish", "ego-platform", "data-directory"]) {
       check(report.checks.some((entry) => entry.name === name), `doctor --json is missing the ${name} check`);
@@ -255,12 +256,12 @@ async function main() {
 
     const doctorText = expectInstalled(["doctor"], doctorStatus, env);
     check(
-      doctorText.stdout.includes(`Result: ${report.ok ? "ok" : "failed"}`),
+      doctorText.stdout.includes(`Status: ${report.ok ? "READY" : "ACTION REQUIRED"}`),
       "doctor text output disagrees with the JSON report",
     );
 
     const secret = "freeweb-verify-secret";
-    const secretDoctor = runInstalled(["doctor"], { ...env, TINYFISH_API_KEY: secret });
+    const secretDoctor = runInstalled(["doctor", "--show-config"], { ...env, TINYFISH_API_KEY: secret });
     check(!secretDoctor.stdout.includes(secret), "doctor printed the TinyFish key instead of redacting it");
     check(!secretDoctor.stderr.includes(secret), "doctor diagnostics printed the TinyFish key");
     check(secretDoctor.stdout.includes("[redacted]"), "doctor did not report a redacted TinyFish key");

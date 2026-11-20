@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { cp, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -106,11 +106,12 @@ describe("built CLI surface", () => {
     expect(doctor.stderr).toBe("");
   });
 
-  it("prints only the semantic version for --version and -v", () => {
+  it("prints only the semantic version for --version and -v", async () => {
+    const metadata = JSON.parse(await readFile(resolve("package.json"), "utf8")) as { version: string };
     for (const args of [["--version"], ["-v"]]) {
       const result = runCli(args);
       expect(result.status).toBe(0);
-      expect(result.stdout).toBe("0.1.0\n");
+      expect(result.stdout).toBe(`${metadata.version}\n`);
       expect(result.stderr).toBe("");
     }
   });
@@ -316,8 +317,9 @@ describe("built CLI surface", () => {
 
     const doctor = runCli(["doctor"], overrides);
     expect(doctor.status).toBe(1);
-    expect(doctor.stdout).toBe("");
-    expect(doctor.stderr).toContain(invalidConfigPath!);
+    expect(doctor.stdout).toContain("Status: ACTION REQUIRED");
+    expect(doctor.stdout).toContain(invalidConfigPath!);
+    expect(doctor.stderr).toBe("");
   });
 
   it("routes doctor --json through the dispatcher as pure JSON on stdout", () => {

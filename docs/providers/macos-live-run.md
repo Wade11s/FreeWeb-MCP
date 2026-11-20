@@ -6,7 +6,7 @@ This run exercises the all-component journey on macOS. It is not evidence for Wi
 
 ## Roles and hard boundaries
 
-- **Orchestrator:** explains the plan, starts only the commands the human explicitly approves, captures sanitized command status/output, and records skipped steps. It never answers provider or billing attestations for the human.
+- **Orchestrator:** explains each Initialization Step, starts only the commands the human explicitly approves, captures sanitized command status/output, and records skipped steps. It never answers provider or billing attestations for the human.
 - **Human macOS user:** approves every side effect; decides whether an existing provider may be used; performs downloads, installation, GUI onboarding, and browser-data choices; and alone makes any TinyFish account attestation.
 - **Account holder:** the only person who can decide whether the TinyFish no-wallet-spending statement is true. This procedure's required baseline deliberately uses the human-pending path and makes no account claim.
 
@@ -46,10 +46,10 @@ cc --version || true
 
 - If 0.1.0 is installed, allow detection and verification; no Cargo installation is needed.
 - If another version is installed, decide whether to keep it for the `Uncertified` warning path or stop. Initialization must not replace it.
-- If Firecrawl is missing and Rust/Cargo/C compiler are present, decide whether the plan may run exactly `cargo install firecrawl-local --version 0.1.0`.
+- If Firecrawl is missing and Rust/Cargo/C compiler are present, decide whether its step may run exactly `cargo install firecrawl-local --version 0.1.0`.
 - If prerequisites are missing, allow the `Pending` path or stop. The human may install prerequisites separately through official sources; Initialization must not do it.
 
-Do not install or change a provider before the Initialization plan is shown and confirmed.
+Do not install or change a provider before its Initialization Step is shown and explicitly selected.
 
 ## 3. Choose the safe TinyFish human-pending path
 
@@ -65,13 +65,13 @@ env -u TINYFISH_API_KEY freeweb-mcp init
 
 An account holder may perform a separate later run with their own environment-provided key and answer the attestation themselves. The orchestrator must not request the key, recommend an attestation answer, or record the value. That separate run is optional and is not required for this human-pending evidence.
 
-## 4. Confirm one plan and perform Firecrawl verification
+## 4. Select each step and perform Firecrawl verification
 
-**Performed by:** human confirms; Initialization executes approved operations.
+**Performed by:** human selects; Initialization executes approved operations.
 
-At the overall plan prompt, verify that Firecrawl is required and TinyFish/ego-lite are optional and default-selected. Confirm only if the exact displayed installation/write/handoff plan is acceptable. Any stale old → new path repair has a separate prompt; the human must approve or decline each exact change.
+At the Firecrawl step, verify that it is required and that TinyFish/ego-lite are separate optional steps with Skip defaults. Select Firecrawl only if the displayed installation or verification action is acceptable. Any stale old → new path repair has a separate numbered prompt; the human must approve or decline each exact change.
 
-**Human decision:** approve or decline the overall plan and each repair. Declining stops before provider operations or writes and is recorded as a skipped live run, not a pass.
+**Human decision:** approve or decline each component action and repair. Quitting stops later provider operations and any pending write and is recorded as a cancelled live run, not a pass.
 
 For a new certified installation, observe the exact pinned Cargo request. For new and existing binaries, Initialization must report an owned loopback health check with Cloud Off and bounded cleanup. Do not start a second Firecrawl service or reuse an unknown process. Record `Installed`, `Pending`, or `Failed` exactly as observed.
 
@@ -100,9 +100,9 @@ Record the observed ego outcome and versions. Do not equate these probes with co
 
 ## 6. Verify configuration, doctor, and client guidance
 
-**Performed by:** Initialization writes configuration and runs doctor; the human/orchestrator inspect only non-secret results.
+**Performed by:** the human selects configuration and Doctor separately; Initialization writes configuration and runs doctor; the human/orchestrator inspect only non-secret results.
 
-Before approving configuration generation, the human decides whether the displayed path and any damaged-file backup/rebuild plan are acceptable. Existing valid explicit values must remain intact; damaged files require a non-overwriting backup and prior consent.
+Before selecting configuration generation, the human decides whether the displayed path and any damaged-file backup/rebuild action are acceptable. Existing valid explicit values must remain intact; damaged files require a non-overwriting backup and prior consent. Doctor runs only after its own explicit selection.
 
 After the run:
 

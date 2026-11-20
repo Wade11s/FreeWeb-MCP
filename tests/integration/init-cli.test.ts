@@ -163,14 +163,19 @@ async function expectTreeToOmit(directory: string, secret: string): Promise<void
 
 /**
  * Drives the built CLI behind a real pseudo-terminal using expect: answers
- * are sent only after each `[y/N]` prompt appears, and the child's exit
- * status propagates through expect's wait.
+ * are sent only after each numbered `Choose [1-N]` prompt appears, and the
+ * child's exit status propagates through expect's wait.
  *
  * Surplus prompts beyond the supplied answers receive `surplusAnswer` (a
  * decline by default) so a test that only cares about the required baseline
  * is not left hanging when an optional component starts asking questions.
  */
-function runCliInPty(answers: readonly string[], overrides: Record<string, string> = {}, surplusAnswer = "n"): Promise<PtyResult> {
+function runCliInPty(
+  answers: readonly string[],
+  overrides: Record<string, string> = {},
+  surplusAnswer = "n",
+  jsonReportPath?: string,
+): Promise<PtyResult> {
   const script = join(root, "drive.exp");
   const program = [
     "set timeout 60",
@@ -180,7 +185,15 @@ function runCliInPty(answers: readonly string[], overrides: Record<string, strin
     "spawn {*}$cmd",
     "set i 0",
     "expect {",
-    "  -re {y/N} {",
+    "  -re {(Apply the selected settings|Run local Doctor)(.|\\n)*Choose \\[} {",
+    "    send -- \"1\\r\"",
+    "    exp_continue",
+    "  }",
+    "  -re {This step failed(.|\\n)*Choose \\[} {",
+    "    send -- \"2\\r\"",
+    "    exp_continue",
+    "  }",
+    "  -re {Choose \\[} {",
     "    if {$i < [llength $answers]} { send -- \"[lindex $answers $i]\\r\" } else { send -- \"$surplus\\r\" }",
     "    incr i",
     "    exp_continue",
@@ -194,13 +207,14 @@ function runCliInPty(answers: readonly string[], overrides: Record<string, strin
   ].join("\n");
   return new Promise<PtyResult>((resolveRun, rejectRun) => {
     void writeFile(script, program).then(() => {
+      const command = jsonReportPath
+        ? ["/bin/sh", "-c", "exec \"$1\" \"$2\" init --json > \"$3\"", "sh", process.execPath, cliPath, jsonReportPath]
+        : [process.execPath, cliPath, "init"];
       const child = spawn(expectBinary, [
         script,
         answers.join(" "),
         surplusAnswer,
-        process.execPath,
-        cliPath,
-        "init",
+        ...command,
       ], { stdio: ["ignore", "pipe", "pipe"], timeout: 60_000, env: cliEnv(overrides) });
       let output = "";
       let settled = false;
@@ -226,7 +240,7 @@ function runCliInPty(answers: readonly string[], overrides: Record<string, strin
         resolveRun({
           status: code,
           output: normalizedOutput,
-          promptCount: (normalizedOutput.match(/\[y\/N\]/g) ?? []).length,
+          promptCount: (normalizedOutput.match(/Choose \[/g) ?? []).length,
         });
       });
     }, rejectRun);
@@ -250,7 +264,7 @@ describe("built CLI init surface", () => {
   });
 
   it("rejects unknown options and excess arguments for init", () => {
-    for (const args of [["init", "--nope"], ["init", "--yes"], ["init", "--json"], ["init", "--config"], ["init", "extra"]]) {
+    for (const args of [["init", "--nope"], ["init", "--yes"], ["init", "--config"], ["init", "extra"]]) {
       const result = runCli(args);
       expect(result.status).toBe(1);
       expect(result.stdout).toBe("");
@@ -260,6 +274,21 @@ describe("built CLI init surface", () => {
 });
 
 describe("built CLI non-TTY init", () => {
+  it("emits one JSON error report without performing initialization", async () => {
+    await writeFakeFirecrawl();
+    const result = runCli(["init", "--json"]);
+    expect(result.status).toBe(1);
+    const report = JSON.parse(result.stdout) as { schemaVersion: number; status: string; error: { code: string } };
+    expect(report).toMatchObject({
+      schemaVersion: 1,
+      status: "failed",
+      error: { code: "TERMINAL_REQUIRED" },
+    });
+    expect(result.stderr).toContain("requires a terminal");
+    expect(existsSync(configPath)).toBe(false);
+    expect(existsSync(join(root, "data"))).toBe(false);
+  });
+
   it("refuses to run without a terminal and performs no reads, writes, or launches", async () => {
     await writeFakeFirecrawl();
     const result = runCli(["init"]);
@@ -277,14 +306,14 @@ describe("built CLI non-TTY init", () => {
 });
 
 describe.skipIf(!hasExpect)("built CLI interactive init behind a pseudo-terminal", () => {
-  it("confirms the plan, verifies, writes private configuration, and exits 0", async () => {
+  it("walks through numbered steps, verifies, writes private configuration, and exits 0", async () => {
     await writeFakeFirecrawl();
     const result = await runCliInPty(["y", "n"]);
-    expect(result.status).toBe(0);
-    expect(result.promptCount).toBe(3);
-    expect(result.output).toContain("FreeWeb-MCP initialization plan:");
+    expect(result.status, result.output).toBe(0);
+    expect(result.promptCount).toBe(5);
+    expect(result.output).toContain("Step 2/6 — Firecrawl Local (required)");
     expect(result.output).toContain("Firecrawl Local: Installed");
-    expect(result.output).toContain("Open the official ego-lite download page");
+    expect(result.output).toContain("Step 4/6 — ego-lite (optional)");
     expect(result.output).toContain("ego-lite: Skipped");
     expect(result.output).toContain("Configuration: Configured");
     expect(result.output).toContain("PASS node:");
@@ -297,6 +326,24 @@ describe.skipIf(!hasExpect)("built CLI interactive init behind a pseudo-terminal
       const { stat } = await import("node:fs/promises");
       expect((await stat(configPath)).mode & 0o777).toBe(0o600);
     }
+  });
+
+  it("keeps redirected JSON stdout parseable while prompts use the terminal stderr", async () => {
+    await writeFakeFirecrawl();
+    const reportPath = join(root, "init-report.json");
+    const result = await runCliInPty(["y", "n"], {}, "n", reportPath);
+
+    expect(result.status, result.output).toBe(0);
+    expect(result.output).toContain("Step 2/6 — Firecrawl Local");
+    expect(result.output).not.toContain('"schemaVersion"');
+    const report = JSON.parse(await readFile(reportPath, "utf8")) as {
+      schemaVersion: number;
+      status: string;
+      steps: { id: string; status: string }[];
+    };
+    expect(report.schemaVersion).toBe(1);
+    expect(report.status).toBe("succeeded");
+    expect(report.steps.map((step) => step.id)).toEqual(["inspection", "firecrawl", "tinyfish", "ego", "configuration", "doctor"]);
   });
 
   it("stops without changes when the plan is declined", async () => {
@@ -334,7 +381,7 @@ describe.skipIf(!hasExpect)("built CLI interactive init behind a pseudo-terminal
 
     const first = await runCliInPty(["y", "y", "y"], { TINYFISH_API_KEY: secret });
     expect(first.status).toBe(0);
-    expect(first.promptCount).toBe(4);
+    expect(first.promptCount).toBe(6);
     expect(first.output).toContain("TinyFish Search/Fetch: Configured");
     expect(first.output).toContain("This TinyFish API key belongs to an account with no wallet spending capability; free credits, a zero balance, disabled auto-reload, and installation success are not substitutes for this attestation.");
     expect(first.output).toContain("Successful Initialization does not prove TinyFish service or account readiness");
@@ -351,9 +398,9 @@ describe.skipIf(!hasExpect)("built CLI interactive init behind a pseudo-terminal
     expect(raw.firecrawl.searchFallback).toBe(false);
     expect(content).not.toContain(secret);
 
-    const second = await runCliInPty(["y"], { TINYFISH_API_KEY: secret });
+    const second = await runCliInPty(["y", "y"], { TINYFISH_API_KEY: secret });
     expect(second.status).toBe(0);
-    expect(second.promptCount).toBe(2);
+    expect(second.promptCount).toBe(5);
     expect(second.output).toContain("TinyFish Search/Fetch: Configured");
     expect(second.output).toContain("no content changes were made");
     expect(second.output).not.toContain("Confirm the Free attestation:");
@@ -370,7 +417,7 @@ describe.skipIf(!hasExpect)("built CLI interactive init behind a pseudo-terminal
 
     expect(result.status).toBe(0);
     expect(result.output).toContain(`persist freeOnlyConfirmed only after confirming: "${attestation}"`);
-    expect(result.output).toContain(`Confirm the Free attestation: ${attestation} [y/N]`);
+    expect(result.output).toContain(`Confirm the Free attestation: ${attestation}`);
     expect(result.output).not.toContain("no [redacted] spending capability");
     expect(result.output).toContain("TinyFish Search/Fetch: Configured");
     const raw = JSON.parse(await readFile(configPath, "utf8")) as { tinyfish: { freeOnlyConfirmed?: boolean } };
@@ -450,7 +497,7 @@ describe.skipIf(!hasExpect)("built CLI interactive init behind a pseudo-terminal
     for (const [path, content] of untouched) await writeFile(path, content);
     await writeFile(configPath, "{ damaged without credentials");
 
-    const result = await runCliInPty(["y", "y", "y"], { TINYFISH_API_KEY: secret });
+    const result = await runCliInPty(["y", "y", "y", "y"], { TINYFISH_API_KEY: secret });
     expect(result.status).toBe(0);
     expect(result.output).toContain("TinyFish Search/Fetch: Configured");
     expect(result.output).not.toContain(secret);
@@ -466,7 +513,7 @@ describe.skipIf(!hasExpect)("built CLI interactive init behind a pseudo-terminal
   it("recovers a malformed configuration after explicit backup-and-rebuild consent", async () => {
     await writeFakeFirecrawl();
     await writeFile(configPath, "{ not valid json");
-    const result = await runCliInPty(["y", "n"]);
+    const result = await runCliInPty(["y", "y", "n"]);
     expect(result.status).toBe(0);
     expect(result.output).toContain("never treated as absent");
     expect(await readFile(join(configDir, "config.backup.json"), "utf8")).toBe("{ not valid json");
@@ -480,7 +527,7 @@ describe.skipIf(!hasExpect)("built CLI automatic Firecrawl installation behind a
     await writeInstallTools();
     const result = await runCliInPty(["y"]);
     expect(result.status).toBe(0);
-    expect(result.promptCount).toBe(3);
+    expect(result.promptCount).toBe(5);
     expect(result.output).toContain("install firecrawl-local 0.1.0 from crates.io");
     expect(result.output).toContain("cargo install firecrawl-local --version 0.1.0");
     expect(result.output).toContain("Firecrawl Local: Installed");

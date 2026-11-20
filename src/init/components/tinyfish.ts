@@ -42,6 +42,7 @@ export function createTinyFishComponent(): InitComponent {
   const plan = (_detection: InitDetection): readonly InitPlanItem[] => [{
     component: "tinyfish",
     action: "configure",
+    stage: "component",
     description: `optionally configure the SDK already included with FreeWeb-MCP (never install or invoke the global TinyFish CLI); persist freeOnlyConfirmed only after confirming: "${TINYFISH_FREE_ATTESTATION}"; make no wallet, business Search/Fetch, or other paid-risk request; never enable Firecrawl Search Fallback as a substitute`,
     required: false,
     selected: true,
@@ -66,19 +67,18 @@ export function createTinyFishComponent(): InitComponent {
         return configured(base);
       }
 
-      const selected = await input.io.prompt.confirm("Set up optional TinyFish Search/Fetch with the SDK already included with FreeWeb-MCP? [y/N]");
-      if (!selected) {
-        return {
-          ...base,
-          outcome: "Skipped",
-          warnings: [],
-          detail: `optional setup skipped; no configuration was changed and Firecrawl Search Fallback was not enabled. ${NO_REQUESTS}`,
-        };
-      }
-
-      // Repeat the exact statement at the decision point as well as in the
-      // plan. A yes answer is the sole source of a true execution patch.
-      const attested = await input.io.prompt.confirm(`Confirm the Free attestation: ${TINYFISH_FREE_ATTESTATION} [y/N]`);
+      // The orchestrator's component step owns setup/skip/quit selection.
+      // Execution begins at the one decision that only TinyFish can explain:
+      // the exact Free attestation. A distinct affirmative option is the sole
+      // source of a true execution patch.
+      const attested = await input.io.prompt.choose(
+        `Confirm the Free attestation: ${TINYFISH_FREE_ATTESTATION}`,
+        [
+          { id: "attest", label: "I confirm the attestation exactly as stated; enable TinyFish" },
+          { id: "decline", label: "Do not enable TinyFish" },
+        ],
+        "decline",
+      ) === "attest";
       if (!attested) {
         const credential = detection.tinyfishKeyPresent
           ? "TINYFISH_API_KEY is present, but the explicit Free attestation was not confirmed"
@@ -109,6 +109,7 @@ export function createTinyFishComponent(): InitComponent {
     label: "TinyFish Search/Fetch",
     publicPhrases: [TINYFISH_FREE_ATTESTATION],
     required: false,
+    actionLabel: (detection) => detection.installed ? "Configure or verify TinyFish Search/Fetch" : "Set up TinyFish Search/Fetch",
     detect,
     plan,
     verify,

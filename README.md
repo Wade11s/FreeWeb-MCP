@@ -57,8 +57,8 @@ The package exposes one executable, `freeweb-mcp` (`dist/cli.js` in a checkout):
 ```text
 freeweb-mcp               Print help; never starts the server
 freeweb-mcp mcp           Start the stdio MCP server
-freeweb-mcp doctor [--json]  Check local provider configuration
-freeweb-mcp init          Interactively initialize providers and safe configuration
+freeweb-mcp doctor [--json] [--show-config]  Check local provider configuration
+freeweb-mcp init [--json]  Initialize interactively, one step at a time
 freeweb-mcp print-config  Print an example MCP client configuration
 freeweb-mcp help [command]  Print global or command help
 freeweb-mcp -v | --version  Print the version
@@ -69,49 +69,67 @@ The MCP server starts only through the explicit `mcp` subcommand; there is no im
 ### doctor
 
 ```bash
-freeweb-mcp doctor          # human-readable report on stdout
-freeweb-mcp doctor --json   # the same report as JSON on stdout
+freeweb-mcp doctor                      # grouped human-readable report
+freeweb-mcp doctor --show-config        # also show redacted effective configuration
+freeweb-mcp doctor --json               # versioned machine-readable report
+freeweb-mcp doctor --json --show-config # add redacted config to the JSON document
 ```
 
-Text mode writes one status line per check, an overall result, and the effective configuration:
+Text mode starts with the overall state and summary, separates required checks from optional capabilities, and gives actionable next steps:
 
 ```text
-PASS node: v22.12.0
-PASS firecrawl-local: firecrawl-local 0.1.0
-PASS ego-browser: ego-browser 1.2.3
-PASS tinyfish: Enabled by explicit free-only account attestation; no wallet request was made
-PASS ego-platform: darwin
-PASS data-directory: /Users/you/.freeweb-mcp
-Result: ok
-Configuration:
-{
-  "dataDir": "/Users/you/.freeweb-mcp",
-  "tinyfish": { "freeOnlyConfirmed": true, "apiKey": "[redacted]", ... },
-  ...
-}
+FreeWeb-MCP Doctor
+Status: ACTION REQUIRED
+Summary: 4/6 checks passed; 1 required failed; 1 warning
+
+Required checks
+  PASS Node.js runtime: v22.12.0
+  FAIL Firecrawl Local: Command failed: firecrawl-local --version
+       Next: Run `freeweb-mcp init` and select Firecrawl Local setup, then rerun `freeweb-mcp doctor`.
+  PASS Data directory: /Users/you/.freeweb-mcp
+
+Optional capabilities
+  PASS ego-lite command: ego-browser 1.2.3
+  WARN TinyFish Search/Fetch: Disabled: TINYFISH_API_KEY is not set
+  PASS Managed Browse platform: darwin
+
+Next steps
+  1. Run `freeweb-mcp init` and select Firecrawl Local setup, then rerun `freeweb-mcp doctor`.
+
+Configuration is hidden by default; use --show-config to display it with secrets redacted.
 ```
 
-- The status word is `PASS` for a passing check, `FAIL` for a failed required check, and `WARN` for a failed optional check. A check may add an indented `  warning: ...` line; today only an uncertified Firecrawl Local version does.
-- `Result:` is `ok` or `failed`.
-- `Configuration:` is followed by the effective configuration (file plus environment overrides) as pretty-printed JSON, with the TinyFish key replaced by `[redacted]`.
-- The checks are `node`, `firecrawl-local`, `ego-browser`, `tinyfish`, `ego-platform`, and `data-directory`, always in that order. `node` enforces the `engines.node` floor from `package.json` (currently Node.js 22.12.0). `tinyfish` reports configuration and account attestation only.
+- `PASS` means the check passed, `FAIL` means a required check failed, and `WARN` means an optional check failed. Uncertified-version warnings are shown beneath their check.
+- The checks remain `node`, `firecrawl-local`, `ego-browser`, `tinyfish`, `ego-platform`, and `data-directory`, in that order in JSON. `node` enforces the `engines.node` floor from `package.json`; `tinyfish` reports configuration and account attestation only.
+- `--show-config` adds the effective file-plus-environment configuration with the TinyFish key replaced by `[redacted]`. Without it, neither text nor JSON includes the complete configuration.
 
-`--json` writes only the report to stdout, with no help text, diagnostics, or configuration prose in that stream:
+`--json` writes one `schemaVersion: 1` document to stdout. Existing `ok` and `checks` fields are retained; each check also has `status` and optional `remediation`, and the report adds `summary` and `nextSteps`:
 
 ```json
 {
+  "schemaVersion": 1,
+  "command": "doctor",
   "ok": false,
+  "status": "action_required",
+  "summary": { "total": 6, "passed": 4, "failed": 1, "warnings": 1 },
   "checks": [
-    { "name": "node", "ok": true, "required": true, "version": "v22.12.0" },
-    { "name": "firecrawl-local", "ok": false, "required": true, "message": "Command failed: firecrawl-local --version" },
-    { "name": "tinyfish", "ok": false, "required": false, "message": "Disabled: TINYFISH_API_KEY is not set" }
-  ]
+    { "name": "node", "ok": true, "required": true, "version": "v22.12.0", "status": "PASS" },
+    {
+      "name": "firecrawl-local",
+      "ok": false,
+      "required": true,
+      "message": "Command failed: firecrawl-local --version",
+      "status": "FAIL",
+      "remediation": "Run `freeweb-mcp init` and select Firecrawl Local setup, then rerun `freeweb-mcp doctor`."
+    }
+  ],
+  "nextSteps": ["Run `freeweb-mcp init` and select Firecrawl Local setup, then rerun `freeweb-mcp doctor`."]
 }
 ```
 
-A real report always contains one entry per check (the example above is trimmed); `version`, `message`, and `warning` appear only when they carry information. Exit status is 0 when every required check passes — optional `WARN` checks and `warning` lines do not fail it — and 1 when a required check fails.
+The example is trimmed; a normal report contains every check. Exit status is 0 when every required check passes — optional `WARN` checks and uncertified warnings do not fail it — and 1 when a required check fails.
 
-If the business configuration cannot be read or is invalid, doctor exits 1. In text mode the diagnostic is on stderr and stdout stays empty; with `--json` the diagnostic is on stderr and stdout still holds a parseable report whose single check is a failed required `configuration` check. Doctor never starts business providers and never makes a TinyFish wallet or API request: provider binaries are only asked for `--version`.
+If business configuration cannot be read or is invalid, doctor exits 1 with one failed required `configuration` check. Text mode renders that report on stdout; JSON mode keeps stdout parseable and writes its human diagnostic to stderr. Doctor never starts business providers and never makes a TinyFish wallet or API request: provider binaries are only asked for `--version`.
 
 Unknown options and extra positional arguments are usage errors: exit code 1, diagnostic on stderr, nothing on stdout.
 
@@ -129,18 +147,32 @@ node dist/cli.js mcp   # same as npm start
 
 ## Initialization
 
-`freeweb-mcp init` is an interactive, terminal-only command that sets up the local baseline. It runs only when explicitly invoked — never from MCP startup or `doctor` — and there is no `--yes`, unattended, or JSON mode. The default plan selects Firecrawl Local, TinyFish, and ego-lite where supported; Firecrawl is required, while TinyFish and ego-lite may be declined without failing an otherwise usable required baseline.
+`freeweb-mcp init` is an interactive, terminal-only command that sets up the local baseline. It runs only when explicitly invoked — never from MCP startup or `doctor` — and there is no `--yes` or unattended mode. It presents one Initialization Step at a time: Inspect environment → Firecrawl Local → TinyFish → ego-lite → Configuration → Doctor verification. Firecrawl is required, while TinyFish and ego-lite may be skipped without failing an otherwise usable required baseline.
 
-1. **Plan and confirm.** It shows the planned provider and configuration actions and asks for confirmation before any side effect. Declining, or running without a terminal, stops before any write, installation, or provider launch and exits non-zero.
+```text
+Step 3/6 — TinyFish Search/Fetch (optional)
+  Current state: installed
+  Action: configure the SDK already included with FreeWeb-MCP
+
+What do you want to do with TinyFish Search/Fetch?
+  1) Configure or verify TinyFish Search/Fetch
+  2) Skip TinyFish Search/Fetch for now [default]
+  3) Quit initialization
+Choose [1-3] (2):
+```
+
+1. **One step and one decision at a time.** Each step shows only its current state, action, warnings, and numbered choices. Empty input selects the safe default (skip an optional component or quit a required action), `q` quits where available, and invalid choices are explained and asked again. Legacy `y`/`n` answers select the first/safe-default choice; on a failure menu, `y` selects Continue rather than retrying the failed side effect. There is no combined plan-confirmation gate.
 2. **Firecrawl is installed only when missing, and existing installations are preserved.** On macOS and Debian/Ubuntu, a missing `firecrawl-local` is installed from crates.io with the exact certified request `cargo install firecrawl-local --version 0.1.0`; the pin is `CERTIFIED_FIRECRAWL_VERSION` in `src/init/components/firecrawl.ts`. Before Cargo runs, `init` checks `rustc`, `cargo`, and `cc`; when one is absent it reports `Pending` with official rustup, Xcode command-line tools, or build-essential guidance and never installs those prerequisites. It never follows a source branch, runs `git clone`, selects another version, runs Firecrawl `login` or Firecrawl's own `init`, enables Search Fallback or private access, or registers an MCP client. Windows and other unsupported platforms receive detection and manual guidance without claiming a verified automatic installation. Existing installations of any version are never upgraded, downgraded, or reinstalled. Verification starts a FreeWeb-MCP-owned serve process on a loopback address, an owned port, with `FIRECRAWL_CLOUD=off`, requests only the local `/health` endpoint, and shuts the process down with the bounded shutdown discipline for both new and existing binaries. Versions other than the certified 0.1.0 are left untouched and reported as an `Uncertified` warning; a failed health check is reported separately as `Failed`. Chrome/Chromium is reported as an optional enhancement for JavaScript rendering and screenshots and is never a required readiness condition.
 3. **Safe configuration.** New configuration uses conservative schema defaults — no private-network access, no Search Fallback, no Unrestricted Browse — and records the resolved absolute path of the detected Firecrawl binary so GUI clients do not depend on your terminal `PATH`. Existing valid configuration keeps every explicit value and receives only missing safe defaults; high-risk settings (private access, Search Fallback, unrestricted execution, the free-only attestation) are surfaced as warnings and never silently changed.
 4. **Repairs ask first.** A stale configured binary path produces an explicit old → new repair proposal and is changed only after its own confirmation.
 5. **Damaged configuration is never treated as absent.** Malformed or schema-invalid files require an explicit backup-and-rebuild confirmation before any installation or write; declining aborts with zero changes. The backup is non-overwriting (`config.backup.json`, then `config.backup.1.json`, …) and its path is reported without echoing damaged-file contents. Configuration writes are atomic — same-directory temporary file plus rename — with mode 0600 files and 0700 directories on POSIX; backups are also changed to 0600 where supported, so an interrupted run never leaves partially written JSON.
-6. **Doctor and summary.** A completed run executes the local doctor checks (the MCP server is never started), prints a summary using the `Installed / Configured / Skipped / Pending / Failed` outcome categories, and points at `freeweb-mcp print-config` for MCP client registration. `init` never reads or writes other MCP clients' configurations.
+6. **Configuration, Doctor, and summary are separate steps.** Configuration is written only after its own selection, and Doctor runs only after another explicit selection. A failed step offers `Retry / Continue / Quit` without automatic retries. Quit stops all later steps and any pending configuration write; already completed installations, backups, writes, or browser launches are not rolled back and are listed in the partial summary. A completed run classifies results as `Installed / Configured / Skipped / Pending / Failed`, points at `freeweb-mcp print-config`, and never starts the MCP server or modifies another MCP client's configuration.
+
+`freeweb-mcp init --json` keeps the same numbered interaction but writes prompts, progress, and diagnostics to stderr. Stdout contains exactly one final `schemaVersion: 1` report, so it can be redirected to a file while stdin and stderr remain attached to the terminal. The report includes `status: succeeded | failed | cancelled`, ordered `steps` with stable ids/statuses/attempt counts, a `doctor` object or `null`, `nextSteps`, and an optional structured `error`. Cancellation and non-TTY refusal also emit parseable reports; JSON does not permit unattended execution or bypass any consent.
 
 Outcomes mean: `Installed` — local installation and Initialization verification passed; `Configured` — requested non-secret prerequisites are effective (for TinyFish, key presence plus attestation only); `Skipped` — optional setup was declined or is unsupported; `Pending` — a human prerequisite or required manual installation remains; `Failed` — a selected operation actually failed. `Uncertified` remains a warning, not an outcome.
 
-Exit status: `0` only when Firecrawl and the base configuration are usable and no selected operation actually failed; `1` when a selected installation, write, or verification operation fails, or when Firecrawl or the base configuration remains `Pending` or `Failed`. Optional `Pending` or `Skipped` components never fail the run.
+Exit status: `0` only when Firecrawl and the base configuration are usable, the selected Doctor step passes, and no selected operation failed; `1` when a selected installation, write, or verification operation fails, Doctor cannot run, a required component remains `Pending` or `Failed`, or the user quits. Optional `Pending` or `Skipped` components never fail the run.
 
 Initialization is idempotent: rerun it after an interruption, after a failed run, or after installing a provider manually. Existing Firecrawl installations are preserved; only a missing Firecrawl is installed, and a rerun verifies a valid 0.1.0 instead of reinstalling it. Recovery is: read the summary, complete the required human/prerequisite step without deleting state, rerun `freeweb-mcp init`, and then run `freeweb-mcp doctor`. Valid explicit settings are preserved, stale path repairs still require confirmation, backups are never overwritten, and an interrupted atomic write leaves the prior complete file in place. Use `freeweb-mcp print-config` separately for client registration.
 
@@ -160,7 +192,7 @@ Initialization makes no TinyFish wallet, business Search/Fetch, SDK, or other pa
 
 ### ego-lite handoff (optional)
 
-The optional ego-lite component is available in `init`. On macOS and Windows it asks before opening the official download page <https://lite.ego.app/> after plan confirmation (`open` on macOS, `explorer.exe` on Windows); answering no returns `Skipped` with no browser launch and lets the rest of Initialization continue. Answering yes then waits for a **separate explicit confirmation** that you installed the app and completed GUI onboarding. Official step-by-step guidance is at <https://github.com/citrolabs/ego-lite/blob/main/skills/ego-browser/references/install.md>. The handoff does not execute the official remote shell installer, remove macOS quarantine attributes, request elevation, upgrade/downgrade/reinstall an existing app, or choose any Browser Profile, cookie, password, session, bookmark, or extension import option. Those choices remain entirely yours.
+The optional ego-lite component is available in `init`. On macOS and Windows it asks before opening the official download page <https://lite.ego.app/> after its step is selected (`open` on macOS, `explorer.exe` on Windows); answering no returns `Skipped` with no browser launch and lets the rest of Initialization continue. Answering yes then waits for a **separate explicit confirmation** that you installed the app and completed GUI onboarding. Official step-by-step guidance is at <https://github.com/citrolabs/ego-lite/blob/main/skills/ego-browser/references/install.md>. The handoff does not execute the official remote shell installer, remove macOS quarantine attributes, request elevation, upgrade/downgrade/reinstall an existing app, or choose any Browser Profile, cookie, password, session, bookmark, or extension import option. Those choices remain entirely yours.
 
 Only after that confirmation does Initialization check `ego-browser --version` and the native Node.js entry (`ego-browser nodejs -e ...`). A newly discovered absolute path is recorded only when no explicit value existed. An explicit `ego.binary` is preserved as written: if it resolves to a different absolute path (including when `EGO_BROWSER_BIN` overrides it), Initialization proposes a separate old → new approval instead of silently rewriting it. Incomplete onboarding is `Pending`; an opener or verification failure is `Failed`; unsupported platforms (including Linux) are `Skipped` with an explanation and no opener launch. Optional `Pending`/`Skipped` does not fail the required local baseline, while a selected `Failed` operation does.
 
