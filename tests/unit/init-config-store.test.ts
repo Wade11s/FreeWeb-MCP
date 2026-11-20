@@ -63,6 +63,7 @@ describe("new configuration defaults", () => {
     expect(file.ego.unrestricted).toBe(false);
     expect(file.ego.allowPrivate).toBe(false);
     expect(file.tinyfish.freeOnlyConfirmed).toBe(false);
+    expect(file.network.trustedDnsServers).toEqual([]);
     expect(file.firecrawl.host).toBe("127.0.0.1");
   });
 
@@ -79,6 +80,7 @@ describe("existing configuration completion", () => {
     expect(merged.firecrawl.port).toBe(3456);
     expect(merged.artifacts.retentionMs).toBe(120_000);
     expect(merged.limits.maxCrawlJobs).toBe(3);
+    expect(added).toContain("network.trustedDnsServers");
     expect(added).toContain("tinyfish.freeOnlyConfirmed");
     expect(added).toContain("firecrawl.allowPrivate");
     expect(added).not.toContain("firecrawl.port");

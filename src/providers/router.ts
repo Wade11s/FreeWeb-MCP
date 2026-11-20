@@ -6,6 +6,19 @@ import { Semaphore, SlidingWindowLimiter } from "../util/limiter.js";
 import type { FetchMapAdapter, FetchProvider, SearchProvider } from "./interfaces.js";
 import { assertPublicHttpUrl } from "../security/url.js";
 
+const URL_VALIDATION_CODES = new Set([
+  "INVALID_URL",
+  "INVALID_URL_SCHEME",
+  "PRIVATE_URL_BLOCKED",
+  "DNS_LOOKUP_FAILED",
+  "FAKE_IP_DNS_DETECTED",
+  "FAKE_IP_DNS_UNVERIFIED",
+]);
+
+function isUrlValidationError(error: unknown): boolean {
+  return error instanceof FreeWebError && URL_VALIDATION_CODES.has(error.code);
+}
+
 export class ProviderRouter {
   private readonly firecrawlSemaphore: Semaphore;
   private readonly tinyfishSearchSemaphore: Semaphore;
@@ -137,7 +150,10 @@ export class ProviderRouter {
       const started = Date.now();
       try {
         if (name === "tinyfish") {
-          const validate = this.options.cloudUrlValidator ?? ((url: string) => assertPublicHttpUrl(url, { allowPrivate: false }));
+          const validate = this.options.cloudUrlValidator ?? ((url: string) => assertPublicHttpUrl(url, {
+            allowPrivate: false,
+            trustedDnsServers: this.options.config.network.trustedDnsServers,
+          }));
           for (const url of request.urls) await validate(url);
         }
         if (name === "firecrawl-local" && request.urls.length > 1) {
@@ -190,6 +206,9 @@ export class ProviderRouter {
     try {
       firstResponse = await execute(firstName, input);
     } catch (error) {
+      // Target validation is outside Provider Fallback: an unsafe or
+      // unverified URL must never cause another local or cloud request.
+      if (isUrlValidationError(error)) throw error;
       firstResponse = {
         results: [],
         errors: input.urls.map((url) => ({ ...errorInfo(error, firstName), url })),

@@ -314,13 +314,17 @@ describe("ProviderRouter Fetch seam", () => {
     expect(result.results[0].provider).toBe("tinyfish");
   });
 
-  it("rejects private URLs at the TinyFish boundary even when local private access is enabled", async () => {
+  it("rejects private URLs at the TinyFish boundary without Provider Fallback", async () => {
+    let firecrawlCalls = 0;
     const firecrawl = unusedFirecrawl({
       fetchVerdict: SUPPORTED,
-      fetch: async (input) => ({
-        results: input.urls.map((url) => ({ url, formats: { markdown: "local" } })),
-        errors: [],
-      }),
+      fetch: async (input) => {
+        firecrawlCalls++;
+        return {
+          results: input.urls.map((url) => ({ url, formats: { markdown: "local" } })),
+          errors: [],
+        };
+      },
     });
     config.firecrawl.allowPrivate = true;
     router = new ProviderRouter({
@@ -332,14 +336,13 @@ describe("ProviderRouter Fetch seam", () => {
       cloudUrlValidator: async () => { throw new FreeWebError("PRIVATE_URL_BLOCKED", "cloud blocked"); },
     });
 
-    const result = await router.fetch(fetchInputSchema.parse({
+    await expect(router.fetch(fetchInputSchema.parse({
       urls: ["http://10.0.0.5/intranet"],
       provider: "tinyfish",
-    }));
+    }))).rejects.toMatchObject({ code: "PRIVATE_URL_BLOCKED" });
 
-    expect(result.provider).toBe("firecrawl-local");
     expect(tinyfish.fetchCalls).toBe(0);
-    expect(result.attempts[0]).toMatchObject({ provider: "tinyfish", code: "PRIVATE_URL_BLOCKED" });
+    expect(firecrawlCalls).toBe(0);
   });
 
   it("fetches a Firecrawl batch concurrently without exceeding the shared budget", async () => {

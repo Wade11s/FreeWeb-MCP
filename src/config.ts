@@ -3,10 +3,17 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import * as z from "zod/v4";
 import { FreeWebError } from "./errors.js";
+import { isPublicIpLiteral } from "./security/url.js";
 
 const bool = z.boolean();
+const trustedDnsServer = z.string().refine(isPublicIpLiteral, {
+  message: "Trusted DNS servers must be public IPv4 or IPv6 literals without brackets",
+});
 export const configFileSchema = z.object({
   dataDir: z.string().min(1).optional(),
+  network: z.object({
+    trustedDnsServers: z.array(trustedDnsServer).default([]),
+  }).strict().prefault({}),
   tinyfish: z.object({
     freeOnlyConfirmed: bool.default(false),
     searchTimeoutMs: z.number().int().min(1000).max(60_000).default(10_000),
@@ -72,6 +79,13 @@ function envInt(env: ConfigEnv, key: string): number | undefined {
   return Number(value);
 }
 
+function envTrustedDnsServers(env: ConfigEnv): string[] | undefined {
+  const value = env.FREEWEB_TRUSTED_DNS_SERVERS;
+  if (value === undefined) return undefined;
+  if (value.trim() === "") return [];
+  return value.split(",").map((server) => server.trim());
+}
+
 export function defaultConfigPath(env: ConfigEnv = process.env): string {
   if (env.FREEWEB_CONFIG) return env.FREEWEB_CONFIG;
   if (process.platform === "win32" && env.APPDATA) return join(env.APPDATA, "FreeWeb-MCP", "config.json");
@@ -95,6 +109,9 @@ export async function loadConfig(options: { env?: ConfigEnv; configPath?: string
   const config: AppConfig = {
     ...file,
     dataDir: env.FREEWEB_DATA_DIR ?? file.dataDir ?? join(homedir(), ".freeweb-mcp"),
+    network: {
+      trustedDnsServers: envTrustedDnsServers(env) ?? file.network.trustedDnsServers,
+    },
     tinyfish: {
       ...file.tinyfish,
       freeOnlyConfirmed: envBool(env, "FREEWEB_TINYFISH_FREE_ONLY_CONFIRMED") ?? file.tinyfish.freeOnlyConfirmed,

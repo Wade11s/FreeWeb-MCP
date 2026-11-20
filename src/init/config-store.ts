@@ -58,7 +58,7 @@ export const nodeInitFilesystem: InitFilesystem = {
   stat: (path) => fsStat(path),
 };
 
-const SECTIONS = ["tinyfish", "firecrawl", "ego", "limits", "artifacts"] as const;
+const SECTIONS = ["network", "tinyfish", "firecrawl", "ego", "limits", "artifacts"] as const;
 const MAX_BACKUP_ATTEMPTS = 100;
 
 /** Full conservative schema defaults, exactly what an absent file would get. */
