@@ -128,11 +128,14 @@ export function createEgoComponent(deps: EgoComponentDeps = {}): InitComponent {
 
   const plan = (detection: InitDetection): readonly InitPlanItem[] => {
     const unsupported = detection.warnings?.find((warning) => warning.code === "EgoPlatformUnsupported");
-    const description = unsupported
-      ? `skip ego-lite: ${unsupported.message}`
-      : detection.installed
-        ? "keep the existing ego-browser installation unchanged (no upgrade); wait for your explicit confirmation that GUI onboarding is complete, then verify the command and native Node.js entry"
-        : `after plan confirmation, ask before opening the official ego-lite download page (${EGO_DOWNLOAD_URL}); declining skips this optional handoff with no browser launch; accepting leaves installation, GUI onboarding, and every browser-data import choice to you; verification waits for a separate explicit confirmation; guidance: ${EGO_INSTALL_REFERENCE_URL}`;
+    let description: string;
+    if (unsupported) {
+      description = `skip ego-lite: ${unsupported.message}`;
+    } else if (detection.installed) {
+      description = "keep the existing ego-browser installation unchanged (no upgrade); wait for your explicit confirmation that GUI onboarding is complete, then verify the command and native Node.js entry";
+    } else {
+      description = `after plan confirmation, ask before opening the official ego-lite download page (${EGO_DOWNLOAD_URL}); declining skips this optional handoff with no browser launch; accepting leaves installation, GUI onboarding, and every browser-data import choice to you; verification waits for a separate explicit confirmation; guidance: ${EGO_INSTALL_REFERENCE_URL}`;
+    }
     return [{
       component: "ego" as const,
       action: "handoff" as const,
