@@ -8,6 +8,10 @@ FreeWeb-MCP 为 AI 客户端提供统一的 Web 搜索、读取与浏览能力�
 一种使用约束：允许无费用的本地能力和明确配置的免费额度，但额度耗尽后必须停止或降级，不能自动产生费用。TinyFish 只使用 Search 和 Fetch，且其 API Key 必须属于确认无钱包支出能力的账户；仅有免费额度或关闭自动充值不满足这个条件。
 _Avoid_: Unlimited、No-account、Offline
 
+**Initialization**:
+为 FreeWeb-MCP 准备本地 Provider 和初始配置的显式、可重复运行过程；它区分安装、配置与验证，过程成功不代表所有可选能力均已就绪，账户授权和 ego onboarding 可能仍需用户完成。
+_Avoid_: Install-all、One-click Setup
+
 **Search**:
 根据查询发现相关 Web 结果，返回候选资源的位置与摘要，而不是读取整个站点。
 _Avoid_: Fetch、Crawl
