@@ -47,7 +47,7 @@
   "dependencies": {
     "@modelcontextprotocol/server": "^2.4.0",
     "@tiny-fish/sdk": "^0.11.0",
-    "commander": "^15.1.0",
+    "commander": "~15.1.0",
     "zod": "^4.1.0"
   },
   "devDependencies": {
