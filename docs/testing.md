@@ -7,15 +7,15 @@ Latest local verification for the MVP:
 ```text
 npm run check
   TypeScript: passed
-  Unit tests: 430 passed across 15 files
-  In-memory, real-stdio and external CLI integration tests: 31 passed across 3 files
+  Unit tests: 434 passed across 15 files
+  In-memory, real-stdio and external CLI integration tests: 39 passed across 4 files
   Build: passed
 
 npm audit
   0 vulnerabilities
 ```
 
-The stdio tests spawn `dist/cli.js` with the explicit `mcp` command and verify the default eight-tool list and opt-in nine-tool list. The external CLI tests spawn the built executable to verify no-argument help, command help and help targets, both version flags, configuration-independent help/version behavior, strict usage errors with stderr diagnostics, and MCP stdout purity. Mock/provider tests are not counted as live provider verification.
+The stdio tests spawn `dist/cli.js` with the explicit `mcp` command and verify the default eight-tool list and opt-in nine-tool list. The external CLI tests spawn the built executable with a temporary HOME and injected fake provider binaries to verify no-argument help, command help and help targets, both version flags, configuration-independent help/version behavior, strict usage errors with stderr diagnostics, and MCP stdout purity. The doctor CLI tests assert the text report and redacted configuration, JSON-only stdout, exit status for failed required checks and optional warnings, the Node.js floor read from a swapped package.json `engines.node`, an invalid business configuration reported as one failed required `configuration` check with a still-parseable JSON report, and unknown-option and excess-argument usage errors; they also record provider argv to prove doctor only ever asks for `--version`. Mock/provider tests are not counted as live provider verification.
 
 ## Live providers
 

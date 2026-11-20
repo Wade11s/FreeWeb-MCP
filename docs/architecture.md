@@ -8,6 +8,8 @@ The package exposes one executable, `freeweb-mcp`. A Commander-based dispatcher 
 
 The executable entry point is the only code that reads argv, writes to the process streams, or terminates the process; it hands those powers to the dispatcher as an injectable context, isolating Commander's output and exit hooks at the CLI boundary so tests and the MCP stdio stream stay deterministic. `doctor` and `mcp` load and validate business configuration inside their handlers; help, version, and `print-config` never touch it. The `mcp` handler owns runtime creation, stdio serving, signal handling, and the orderly shutdown deadline; stdout stays reserved for JSON-RPC, and startup and shutdown diagnostics go to stderr.
 
+The `doctor` handler reports each check and the redacted effective configuration in text mode, and in `--json` mode writes only the report to stdout; every human diagnostic, including an unusable configuration, goes to stderr, where a configuration failure is also reported as one failed required `configuration` check so the JSON stream stays parseable. Doctor's Node.js check enforces the `engines.node` floor read from package.json, so the declared minimum has one source. A failed required check exits 1; optional warnings do not. Provider binaries are only spawned with `--version`, and TinyFish readiness is read from configuration, so doctor starts no business provider and makes no wallet or API request.
+
 ## Modules
 
 - **FreeWebRuntime** coordinates configuration, providers, URL checks and shutdown. Providers start lazily.
