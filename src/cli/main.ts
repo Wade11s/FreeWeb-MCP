@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { Command, CommanderError } from "commander";
 import { declareDoctor, registerDoctor } from "./commands/doctor.js";
 import { declareHelp, registerHelp } from "./commands/help.js";
+import { declareInit, registerInit } from "./commands/init.js";
 import { declareMcp, registerMcp } from "./commands/mcp.js";
 import { declarePrintConfig, registerPrintConfig } from "./commands/print-config.js";
 import { text } from "./text.js";
@@ -58,6 +59,7 @@ function baseProgram(ctx: CliContext): Command {
 interface DeclaredCommands {
   mcp: Command;
   doctor: Command;
+  init: Command;
   printConfig: Command;
   help: Command;
 }
@@ -73,6 +75,7 @@ function declareCommands(program: Command): DeclaredCommands {
   return {
     mcp: declareMcp(program),
     doctor: declareDoctor(program),
+    init: declareInit(program),
     printConfig: declarePrintConfig(program),
     help: declareHelp(program),
   };
@@ -83,6 +86,7 @@ export function buildProgram(version: string, ctx: CliContext, result: { code: n
   const commands = declareCommands(program);
   registerMcp(commands.mcp, ctx, result);
   registerDoctor(commands.doctor, ctx, result);
+  registerInit(commands.init, ctx, result);
   registerPrintConfig(commands.printConfig, ctx);
   registerHelp(commands.help, program, ctx, result);
   return program;
