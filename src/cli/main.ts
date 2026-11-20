@@ -44,7 +44,8 @@ function buildProgram(version: string, ctx: CliContext, result: { code: number }
       writeErr: (diagnostics) => ctx.err(diagnostics),
     })
     .exitOverride()
-    .allowExcessArguments(false);
+    .allowExcessArguments(false)
+    .helpCommand(false);
 
   registerMcp(program, ctx, result);
   registerDoctor(program, ctx, result);
