@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { defaultConfigPath, loadConfig, type AppConfig } from "../config.js";
 import { runDoctor, type DoctorCheck } from "../doctor.js";
+import { readPackageMetadata } from "../package-metadata.js";
 import { registeredInitComponents } from "./components/registry.js";
 import type { InitComponent, InitConfigPatch, InitConfigRepair, InitConfigValue, InitDetection, InitTimeouts } from "./component.js";
 import {
@@ -34,7 +35,10 @@ export function defaultInitDeps(env: NodeJS.ProcessEnv = process.env): InitDeps 
     configPath: defaultConfigPath(env),
     components: registeredInitComponents(),
     store: new ConfigStore(),
-    runDoctor,
+    runDoctor: async (config) => {
+      const metadata = await readPackageMetadata();
+      return runDoctor(config, { minimumNodeVersion: metadata.minimumNodeVersion });
+    },
     loadAppConfig: (options) => loadConfig(options),
   };
 }

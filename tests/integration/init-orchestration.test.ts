@@ -80,14 +80,14 @@ function deps(overrides: Partial<InitDeps> = {}): InitDeps {
     configPath,
     components: [createFirecrawlComponent()],
     store: new ConfigStore(),
-    runDoctor: (config) => runDoctor({
+    runDoctor: async (config) => runDoctor({
       ...config,
       firecrawl: {
         ...config.firecrawl,
         binary: config.firecrawl.binary === "firecrawl-local" ? join(binDir, "firecrawl-local") : config.firecrawl.binary,
       },
       ego: { ...config.ego, binary: join(binDir, "ego-browser") },
-    }),
+    }, { minimumNodeVersion: [22, 12, 0] }),
     loadAppConfig: (options) => loadConfig(options),
     ...overrides,
   };
