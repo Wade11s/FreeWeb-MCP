@@ -527,5 +527,6 @@ describe("init interruption and rerun recovery", () => {
     }));
     expect(code).toBe(1);
     expect(fake.out()).toContain("FAIL data-directory: simulated failure");
+    expect(fake.out()).toContain("Initialization did not complete");
   });
 });

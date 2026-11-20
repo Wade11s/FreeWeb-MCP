@@ -173,7 +173,7 @@ export async function runInit(io: InitIo, deps: InitDeps): Promise<number> {
   io.writeLine("Next steps:");
   io.writeLine("  - To register FreeWeb-MCP with an MCP client, run `freeweb-mcp print-config`; init never reads or writes other clients' configurations.");
   io.writeLine("  - Automated Firecrawl installation and optional TinyFish and ego-lite setup arrive in later releases.");
-  if (summary.exitCode !== 0) {
+  if (summary.exitCode !== 0 || doctorFailed) {
     io.writeLine("  Initialization did not complete; rerun `freeweb-mcp init` after addressing the items above (it is safe to rerun).");
   }
   return doctorFailed ? 1 : summary.exitCode;
