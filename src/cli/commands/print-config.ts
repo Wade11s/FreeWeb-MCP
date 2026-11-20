@@ -9,7 +9,7 @@ import { text } from "../text.js";
 export function declarePrintConfig(program: Command): Command {
   return program
     .command("print-config")
-    .description("Print an example MCP client configuration")
+    .description("Print the CLI-native MCP client configuration")
     .allowExcessArguments(false);
 }
 
