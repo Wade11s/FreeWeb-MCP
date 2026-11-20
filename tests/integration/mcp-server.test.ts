@@ -20,7 +20,7 @@ import {
   type SearchProvider,
 } from "../../src/providers/interfaces.js";
 import { ProviderRouter } from "../../src/providers/router.js";
-import type { BrowseInput, CrawlInput, CrawlStatusInput, SearchInput } from "../../src/types.js";
+import type { BrowseInput, CrawlInput, CrawlStatusInput, MapInput, SearchInput } from "../../src/types.js";
 
 class FakeCrawlAdapter implements CrawlJobAdapter {
   snapshot: CrawlJobSnapshot = { status: "scraping", total: 0, completed: 0, pages: [], errors: [] };
@@ -462,6 +462,110 @@ describe("MCP public protocol seam", () => {
         expect.objectContaining({ provider: "firecrawl-search", outcome: "skipped", code: "PROVIDER_NOT_CONFIGURED" }),
       ]);
       expect(tinyfish.searchCalls).toBe(1);
+    });
+  });
+
+  describe("Map outcome contract through the MCP public protocol", () => {
+    class ControlledMapAdapter implements FetchMapAdapter {
+      readonly name = "firecrawl-local" as const;
+      calls = 0;
+      links: Array<{ url: string }> = [];
+      failure?: FreeWebError;
+
+      inspectFetch(): ProviderPreflight {
+        return SUPPORTED;
+      }
+
+      async fetch(): Promise<never> {
+        throw new Error("Fetch is not part of this Map contract");
+      }
+
+      async map(): Promise<{ links: Array<{ url: string }> }> {
+        this.calls++;
+        if (this.failure) throw this.failure;
+        return { links: this.links };
+      }
+    }
+
+    class MapRouterRuntime implements FreeWebToolHandlers {
+      unrestricted = false;
+
+      constructor(readonly artifacts: ArtifactStore, private readonly router: ProviderRouter) {}
+
+      async search(): Promise<never> { throw new Error("not used"); }
+      async fetch(): Promise<never> { throw new Error("not used"); }
+      async map(input: MapInput) { return this.router.map(input); }
+      async crawl(): Promise<never> { throw new Error("not used"); }
+      async crawlStatus(): Promise<never> { throw new Error("not used"); }
+      async crawlCancel(): Promise<never> { throw new Error("not used"); }
+      async managedBrowseToolCall(): Promise<never> { throw new Error("not used"); }
+      async browseEvaluate(): Promise<never> { throw new Error("not used"); }
+      async browseNode(): Promise<never> { throw new Error("not used"); }
+    }
+
+    async function connectMapContract(adapter: ControlledMapAdapter) {
+      await client.close();
+      await server.close();
+      const config = await loadConfig({ configPath: join(root, "missing.json"), env: {} });
+      const artifacts = new ArtifactStore({ root });
+      const router = new ProviderRouter({
+        config,
+        output: new ArtifactOutput(artifacts),
+        firecrawl: adapter,
+      });
+      server = createMcpServer(new MapRouterRuntime(artifacts, router), ordinaryVersion);
+      client = new Client({ name: "freeweb-map-contract-client", version: "1.0.0" });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+    }
+
+    function mapError(result: CallToolResult): Record<string, any> {
+      const block = result.content[0];
+      if (!block || block.type !== "text") throw new Error("Expected a text error block");
+      return JSON.parse(String(block.text)).error;
+    }
+
+    it("keeps a confirmed empty Map result successful without any Fallback attempt", async () => {
+      const adapter = new ControlledMapAdapter();
+      await connectMapContract(adapter);
+
+      const result = await client.callTool({ name: "map", arguments: { url: "https://example.com/empty" } });
+
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        provider: "firecrawl-local",
+        links: [],
+        warnings: [],
+        partial: false,
+        attempts: [expect.objectContaining({ provider: "firecrawl-local", outcome: "success" })],
+      });
+      expect(adapter.calls).toBe(1);
+    });
+
+    it("reports an explicit application-level failure as the Map Provider failure", async () => {
+      const adapter = new ControlledMapAdapter();
+      adapter.failure = new FreeWebError("MAP_APPLICATION_FAILED", "Controlled application failure", {
+        provider: "firecrawl-local",
+        cause: new Error("original application cause"),
+      });
+      await connectMapContract(adapter);
+
+      const result = await client.callTool({ name: "map", arguments: { url: "https://example.com/failed" } });
+
+      expect(result.isError).toBe(true);
+      expect(mapError(result)).toMatchObject({
+        code: "ALL_PROVIDERS_FAILED",
+        message: "Firecrawl Local Map failed",
+        cause: "Controlled application failure",
+        attempts: [expect.objectContaining({
+          provider: "firecrawl-local",
+          outcome: "error",
+          code: "MAP_APPLICATION_FAILED",
+          message: "Controlled application failure",
+        })],
+      });
+      expect(adapter.calls).toBe(1);
     });
   });
 
