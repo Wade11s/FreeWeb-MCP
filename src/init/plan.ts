@@ -3,7 +3,7 @@ import { completeExistingConfig, highRiskSettingWarnings, type ConfigClassificat
 import type { InitComponentId, InitWarning } from "./outcomes.js";
 
 /** The action kinds an Initialization plan item can describe. */
-export type InitAction = "detect" | "verify" | "configure" | "write" | "handoff";
+export type InitAction = "detect" | "verify" | "configure" | "write" | "handoff" | "install";
 
 export interface InitPlanItem {
   readonly component: InitComponentId;
