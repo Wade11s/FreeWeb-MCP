@@ -204,7 +204,8 @@ describe.skipIf(!hasExpect)("built CLI interactive init behind a pseudo-terminal
     expect(result.status).toBe(0);
     expect(result.output).toContain("FreeWeb-MCP initialization plan:");
     expect(result.output).toContain("Firecrawl Local: Installed");
-    expect(result.output).toContain("ego-lite: Pending");
+    expect(result.output).toContain("Open the official ego-lite download page");
+    expect(result.output).toContain("ego-lite: Skipped");
     expect(result.output).toContain("Configuration: Configured");
     expect(result.output).toContain("PASS node:");
     expect(result.output).toContain("print-config");
