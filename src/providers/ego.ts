@@ -463,37 +463,20 @@ function acquisitionScript(options: Pick<ManagedScriptOptions, "taskId" | "name"
   const createCall = options.profileId === null
     ? "await taskSpace(SPACE_NAME)"
     : `await taskSpace(SPACE_NAME, { profileId: ${json(options.profileId)} })`;
-  // finish(keep) retains tab objects in their own order but ends their labels. Restore
-  // only from the label list recorded in that same Tab order, or (for legacy rows) from
-  // the single unambiguous saved label. Never invent labels, never repeat an `as` label,
-  // and never adopt a tab without a label. The exact-label check below decides whether
-  // the requested Page exists after restoration.
+  // Claim happens before this block. After finish(keep), ego-lite returns an owned but
+  // unlabeled TaskSpace; every kept Tab must be adopted before Page work. Restore from
+  // the recorded Tab-order labels when present. For a legacy row, use its sole saved
+  // label only when there is exactly one Tab; otherwise let adopt() assign the pN label
+  // ego already gives that Tab. Never invent a label or repeat an `as` label.
   const adoptBlock = options.keptPages.length > 0 || options.pageOrder.length > 0
     ? `if (wasClaimed) {
   const tabs = await task.tabs();
   const candidates = tabs.filter((tab) => !tab.label && tab.openedBy !== "user" && tab.openedBy !== "unknown");
-  const labels = [...new Set(PAGE_ORDER.length ? PAGE_ORDER : KEPT_PAGES)];
-  for (const [index, tab] of candidates.slice(0, labels.length).entries()) {
-    await task.adopt(tab.page, { as: labels[index] });
-  }
-}
-`
-    : "";
-  // A legacy row has no recorded Tab-order mapping. Its saved `pages` list is the last
-  // keep preference, not Tab order, so it is trustworthy only with one saved label and
-  // one surviving managed tab. Fail before claiming in every other case so the Space
-  // stays exactly as it was and the caller gets a concrete recovery step.
-  const legacyGuard = withPage && options.pageOrder.length === 0
-    ? `if (wasClaimed) {
-  const preview = await taskSpace(RESOLVED_ID);
-  const previewTabs = await preview.tabs();
-  const candidates = previewTabs.filter((tab) => !tab.label && tab.openedBy !== "user" && tab.openedBy !== "unknown");
-  const saved = [...new Set(KEPT_PAGES)];
-  if (candidates.length !== 1 || saved.length !== 1) {
-    const missing = new Error("EGO_PAGE_NOT_FOUND: legacy Page label mapping is ambiguous; close and reopen the managed Task Space");
-    missing.code = "EGO_PAGE_NOT_FOUND";
-    missing.details = { requestedPage: PAGE_LABEL, availablePages: KEPT_PAGES, reason: "legacy-page-mapping-ambiguous", recovery: "close and reopen the managed Task Space" };
-    throw missing;
+  const labels = [...new Set(PAGE_ORDER)];
+  for (const [index, tab] of candidates.entries()) {
+    const saved = labels[index] ?? (labels.length === 0 && KEPT_PAGES.length === 1 && candidates.length === 1 ? KEPT_PAGES[0] : undefined);
+    if (saved === undefined) await task.adopt(tab.page);
+    else await task.adopt(tab.page, { as: saved });
   }
 }
 `
@@ -517,7 +500,7 @@ ${withPage ? `const PAGE_LABEL = ${json(options.pageLabel)};\n` : ""}`;
 ${spaceLookup}
 if (spaceEntry) RESOLVED_ID = spaceEntry.id;
 const wasClaimed = !!spaceEntry && (spaceEntry.ownership === "user" || spaceEntry.ownership === "inactive");
-${legacyGuard}task = !spaceEntry
+task = !spaceEntry
   ? TASK_ID === null
     ? ${createCall}
     : (() => { const missing = new Error("EGO_SPACE_MISSING"); missing.code = "EGO_SPACE_MISSING"; throw missing; })()
