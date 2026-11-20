@@ -43,7 +43,7 @@ export function createTinyFishComponent(): InitComponent {
     component: "tinyfish",
     action: "configure",
     stage: "component",
-    description: `optionally configure the SDK already included with FreeWeb-MCP (never install or invoke the global TinyFish CLI); persist freeOnlyConfirmed only after confirming: "${TINYFISH_FREE_ATTESTATION}"; make no wallet, business Search/Fetch, or other paid-risk request; never enable Firecrawl Search Fallback as a substitute`,
+    description: `optionally configure the SDK already included with FreeWeb-MCP (never install or invoke the global TinyFish CLI); persist freeOnlyConfirmed only after confirming: "${TINYFISH_FREE_ATTESTATION}"; make no wallet, business Search/Fetch, or other paid-risk request; never enable the keyless Firecrawl Search Provider as a substitute`,
     required: false,
     selected: true,
   }];
@@ -124,7 +124,7 @@ function configured(base: TinyFishResultBase): InitComponentResult {
     ...base,
     outcome: "Configured",
     warnings: [],
-    detail: `TINYFISH_API_KEY is present and the explicit no-wallet-spending attestation is effective; Firecrawl Search Fallback was not enabled. ${NO_REQUESTS} Successful Initialization does not prove TinyFish service or account readiness.`,
+    detail: `TINYFISH_API_KEY is present and the explicit no-wallet-spending attestation is effective; The keyless Firecrawl Search Provider was not enabled. ${NO_REQUESTS} Successful Initialization does not prove TinyFish service or account readiness.`,
   };
 }
 

@@ -81,7 +81,7 @@ export function buildInitPlan(context: InitPlanContext): InitPlan {
       component: "configuration",
       action: "write",
       stage: "configuration",
-      description: `write new configuration with conservative defaults (no private access, no Search Fallback, no Unrestricted Browse) to ${configPath}${detectionPatches.length > 0 ? " and apply detected component settings" : ""}`,
+      description: `write new configuration with conservative defaults (no private access, no keyless Firecrawl Search Provider, no Unrestricted Browse) to ${configPath}${detectionPatches.length > 0 ? " and apply detected component settings" : ""}`,
       required: true,
       selected: true,
     });
