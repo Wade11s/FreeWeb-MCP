@@ -78,6 +78,8 @@ interface EgoTaskRecord {
   status: "active" | "handoff" | "reaping";
   ownership: string;
   pages: string[];
+  /** Page labels in Tab order at the last finish, used to restore labels on claim. */
+  pageOrder?: string[];
   /**
    * Present only while a reap finish is in flight. The value is written under the registry
    * lock before the runtime call, so the later delete can prove the record is still the
@@ -107,6 +109,10 @@ interface ManagedScriptOptions {
   profileId: string | null;
   pageLabel: string;
   keepCount: number;
+  /** Labels this round may keep; used only as the legacy fallback mapping. */
+  keptPages: readonly string[];
+  /** Page labels in Tab order from the previous finish. */
+  pageOrder: readonly string[];
   operationCode: string;
   marker: string;
   /** Absolute path the script uses when the payload is too large for stdout. */
@@ -178,6 +184,17 @@ const HANDOFF_RESUME_HINT = "takeOverTaskSpace(spaceId)";
 
 function isRecord(value: unknown): value is EgoPayload {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parsePageOrder(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const order: string[] = [];
+  for (const label of value) {
+    if (typeof label !== "string" || !label || order.includes(label)) continue;
+    order.push(label);
+    if (order.length === 20) break;
+  }
+  return order.length ? order : undefined;
 }
 
 function json(value: unknown): string {
@@ -376,7 +393,7 @@ export class EgoProcessRunner implements EgoRunner {
 function serializeScriptError(): string {
   return `const serializeEgoError = (error) => {
   const value = { name: error?.name ?? "Error", message: error?.message ?? String(error) };
-  for (const key of ["code", "executionStopped", "pageResponsive", "mayHaveLateEffects", "stopped"]) {
+  for (const key of ["code", "details", "executionStopped", "pageResponsive", "mayHaveLateEffects", "stopped"]) {
     if (error && key in error) value[key] = error[key];
   }
   return value;
@@ -428,6 +445,13 @@ const emitEgoResult = async (payload) => {
 ${serializeScriptError()}`;
 }
 
+/** Managed Page labels in stable Tab order, independent of url/title and keep order. */
+function pageOrderHelper(): string {
+  return `const managedPageOrder = (tabs) => tabs
+  .filter((tab) => typeof tab.label === "string" && tab.label && tab.openedBy !== "user" && tab.openedBy !== "unknown")
+  .map((tab) => tab.label);`;
+}
+
 interface AcquisitionScript {
   /** Constants declared before the try so the catch block can still report the task. */
   readonly constants: string;
@@ -435,18 +459,24 @@ interface AcquisitionScript {
   readonly body: string;
 }
 
-function acquisitionScript(options: Pick<ManagedScriptOptions, "taskId" | "name" | "profileId" | "keepCount" | "pageLabel">, withPage: boolean): AcquisitionScript {
+function acquisitionScript(options: Pick<ManagedScriptOptions, "taskId" | "name" | "profileId" | "keepCount" | "keptPages" | "pageOrder" | "pageLabel" | "requiresPage">, withPage: boolean): AcquisitionScript {
   const createCall = options.profileId === null
     ? "await taskSpace(SPACE_NAME)"
     : `await taskSpace(SPACE_NAME, { profileId: ${json(options.profileId)} })`;
-  // Only re-claim unlabeled tabs when this invocation keeps something; a
-  // finish({ keep: [] }) must not adopt pages it is about to release.
-  const adoptBlock = options.keepCount > 0
-    ? `if (wasClaimed && KEEP_COUNT > 0) {
+  // Claim happens before this block. After finish(keep), ego-lite returns an owned but
+  // unlabeled TaskSpace; every kept Tab must be adopted before Page work. Restore from
+  // the recorded Tab-order labels when present. For a legacy row, use its sole saved
+  // label only when there is exactly one Tab; otherwise let adopt() assign the pN label
+  // ego already gives that Tab. Never invent a label or repeat an `as` label.
+  const adoptBlock = options.keptPages.length > 0 || options.pageOrder.length > 0
+    ? `if (wasClaimed) {
   const tabs = await task.tabs();
   const candidates = tabs.filter((tab) => !tab.label && tab.openedBy !== "user" && tab.openedBy !== "unknown");
-  for (const tab of candidates.slice(0, KEEP_COUNT)) {
-    await task.adopt(tab.page);
+  const labels = [...new Set(PAGE_ORDER)];
+  for (const [index, tab] of candidates.entries()) {
+    const saved = labels[index] ?? (labels.length === 0 && KEPT_PAGES.length === 1 && candidates.length === 1 ? KEPT_PAGES[0] : undefined);
+    if (saved === undefined) await task.adopt(tab.page);
+    else await task.adopt(tab.page, { as: saved });
   }
 }
 `
@@ -461,6 +491,8 @@ function acquisitionScript(options: Pick<ManagedScriptOptions, "taskId" | "name"
   const constants = `const TASK_ID = ${json(options.taskId)};
 const SPACE_NAME = ${json(options.name)};
 const KEEP_COUNT = ${options.keepCount};
+const KEPT_PAGES = ${json(options.keptPages)};
+const PAGE_ORDER = ${json(options.pageOrder)};
 let RESOLVED_ID = TASK_ID === null ? -1 : TASK_ID;
 let task = null;
 ${withPage ? `const PAGE_LABEL = ${json(options.pageLabel)};\n` : ""}`;
@@ -478,7 +510,14 @@ task = !spaceEntry
       ? await takeOverTaskSpace(RESOLVED_ID)
       : await taskSpace(RESOLVED_ID);
 ${adoptBlock}${withPage ? `const managedPages = await task.pages();
-const page = managedPages.find((item) => item.label === PAGE_LABEL) ?? managedPages[0];` : ""}`;
+const page = managedPages.find((item) => item.label === PAGE_LABEL);
+${options.requiresPage === false ? "" : `if (!page) {
+  const availablePages = managedPages.map((item) => item.label);
+  const missing = new Error("EGO_PAGE_NOT_FOUND: Page " + PAGE_LABEL + " was not found; available Page labels: " + (availablePages.length ? availablePages.join(", ") : "none"));
+  missing.code = "EGO_PAGE_NOT_FOUND";
+  missing.details = { requestedPage: PAGE_LABEL, availablePages };
+  throw missing;
+}`}` : ""}`;
   return { constants, body };
 }
 
@@ -493,6 +532,7 @@ function buildManagedScript(options: ManagedScriptOptions): string {
 `;
   const acquisition = acquisitionScript(options, true);
   return `${emitHelper(options.marker, options.artifactPath)}
+${pageOrderHelper()}
 ${acquisition.constants}let egoCallValue;
 try {
 ${acquisition.body}
@@ -503,6 +543,7 @@ ${pageGuard}${options.operationCode}
     value: egoCallValue,
     task: { spaceId: task.spaceId ?? RESOLVED_ID, name: task.name, ownership: task.ownership },
     pages: pagesAfter.map((item) => item.label),
+    pageOrder: managedPageOrder(await task.tabs()),
     spaces: await listTaskSpaces(),
   });
 } catch (error) {
@@ -512,6 +553,9 @@ ${pageGuard}${options.operationCode}
     ? { spaceId: task.spaceId ?? RESOLVED_ID, name: task.name, ownership: task.ownership }
     : null;
   const spacesAfter = await listTaskSpaces().catch(() => undefined);
+  // A failure may happen after claim/adopt. Report and persist the labels that really
+  // exist so the exact-label error is actionable and the next call can resolve them.
+  const restoredPages = task ? managedPageOrder(await task.tabs().catch(() => [])) : [];
   await emitEgoResult({
     ok: false,
     error: serializeEgoError(error),
@@ -521,7 +565,8 @@ ${pageGuard}${options.operationCode}
     created: failedTask !== null || (Array.isArray(spacesAfter)
       ? spacesAfter.some((space) => space.name === SPACE_NAME)
       : null),
-    pages: [],
+    pages: restoredPages,
+    pageOrder: restoredPages,
     spaces: Array.isArray(spacesAfter) ? spacesAfter : [],
   });
 }
@@ -530,23 +575,26 @@ ${pageGuard}${options.operationCode}
 
 function buildFinishScript(options: FinishScriptOptions): string {
   const keep = options.keep.map((label) => json(label)).join(", ");
-  // Adopt only as many unlabeled tabs as this finish actually keeps. Deriving the
-  // count from the stale `task.pages` would adopt pages that `finish({ keep: [] })`
-  // is about to drop (close/reap), leaving them claimed as agent pages.
+  // Adopt only the unlabeled tabs this finish keeps, restoring each label before
+  // finish({ keep }) selects it. Deriving the count from stale `task.pages` would
+  // adopt pages that `finish({ keep: [] })` is about to release (close/reap).
   const keepCount = options.keep.length;
   const acquisition = acquisitionScript(
-    { taskId: options.task.spaceId, name: options.task.name, profileId: options.task.profileId, keepCount, pageLabel: options.task.pages[0] ?? "p1" },
+    { taskId: options.task.spaceId, name: options.task.name, profileId: options.task.profileId, keepCount, keptPages: options.keep, pageOrder: options.task.pageOrder ?? [], pageLabel: options.task.pages[0] ?? "p1" },
     false,
   );
   return `${emitHelper(options.marker, options.artifactPath)}
+${pageOrderHelper()}
 ${acquisition.constants}try {
 ${acquisition.body}
+  const tabsBeforeFinish = await task.tabs();
   const receipt = await task.finish({ keep: [${keep}] });
   await emitEgoResult({
     ok: true,
     value: { finished: true, receipt },
     task: { spaceId: RESOLVED_ID, name: SPACE_NAME, ownership: "user" },
     pages: [${keep}],
+    pageOrder: managedPageOrder(tabsBeforeFinish).filter((label) => KEPT_PAGES.includes(label)),
     receipt,
     spaces: await listTaskSpaces(),
   });
@@ -918,6 +966,8 @@ export class EgoProvider {
         profileId,
         pageLabel: input.page,
         keepCount: 1,
+        keptPages: [input.page ?? "p1"],
+        pageOrder: [],
         operationCode,
         kind: "managed",
       }));
@@ -1052,13 +1102,20 @@ export class EgoProvider {
         });
       }
     }
+    if (plan.spec.target !== "task") this.requirePage(task, input.page);
     const { payload } = await this.runManaged({
       ...this.managedBase(task, input.page),
       operationCode: renderEgoCall(plan),
       kind: "managed",
       requiresPage: plan.spec.target !== "task",
     });
-    if (payload.ok === false) throw payloadError(payload);
+    if (payload.ok === false) {
+      // Claim/adopt already happened in the runtime. Persist the restored labels before
+      // surfacing the exact-label error so a retry resolves the same Page labels.
+      this.updateRecord(task, payload);
+      await this.writeRegistry(registry);
+      throw payloadError(payload);
+    }
     this.updateRecord(task, payload);
     const keep = this.requiredKeep(input.page, payload);
     const warnings = await this.finishAndUpdate(registry, task, keep);
@@ -1150,6 +1207,7 @@ egoCallValue = {
     const registry = await this.readRegistry();
     const task = this.requireTask(registry, input.browseId);
     this.requireWorkAllowed(task);
+    this.requirePage(task, input.page);
     const scriptLiteral = json(input.script);
     const argumentLiteral = input.argument === undefined ? "undefined" : json(input.argument);
     const { payload } = await this.runManaged({
@@ -1164,6 +1222,9 @@ egoCallValue = await page.evaluate(expression);`,
       kind: "evaluate",
     });
     if (payload.ok === false) {
+      // Persist labels restored by claim/adopt before returning the Page Evaluation error.
+      this.updateRecord(task, payload);
+      await this.writeRegistry(registry);
       return {
         browseId: task.browseId,
         ...this.spaceIdFields(task),
@@ -1176,6 +1237,17 @@ egoCallValue = await page.evaluate(expression);`,
     const warnings = await this.finishAndUpdate(registry, task, keep);
     await this.writeRegistry(registry);
     return this.outputFor(task, payload, keep, warnings);
+  }
+
+  private requirePage(task: EgoTaskRecord, requestedPage: string): void {
+    const availablePages = [...task.pages];
+    if (availablePages.includes(requestedPage)) return;
+    const labels = availablePages.length ? availablePages.join(", ") : "none";
+    throw new FreeWebError(
+      "EGO_PAGE_NOT_FOUND",
+      `Page "${requestedPage}" was not found; available Page labels: ${labels}`,
+      { provider: PROVIDER, details: { requestedPage, availablePages } },
+    );
   }
 
   private requireWorkAllowed(task: EgoTaskRecord, allowHandoff = false): void {
@@ -1200,13 +1272,15 @@ egoCallValue = await page.evaluate(expression);`,
     return task.spaceId >= 0 ? { spaceId: task.spaceId } : {};
   }
 
-  private managedBase(task: EgoTaskRecord, pageLabel: string): Pick<ManagedScriptOptions, "taskId" | "name" | "profileId" | "pageLabel" | "keepCount"> {
+  private managedBase(task: EgoTaskRecord, pageLabel: string): Pick<ManagedScriptOptions, "taskId" | "name" | "profileId" | "pageLabel" | "keepCount" | "keptPages" | "pageOrder"> {
     return {
       taskId: task.spaceId,
       name: task.name,
       profileId: task.profileId,
       pageLabel,
       keepCount: task.pages.length,
+      keptPages: [...task.pages],
+      pageOrder: [...(task.pageOrder ?? [])],
     };
   }
 
@@ -1220,6 +1294,7 @@ egoCallValue = await page.evaluate(expression);`,
   private recordFromPayload(browseId: string, name: string, profileId: string, payload: EgoPayload): EgoTaskRecord {
     const now = this.nowFn();
     const taskInfo = isRecord(payload.task) ? payload.task : {};
+    const pageOrder = parsePageOrder(payload.pageOrder);
     return {
       browseId,
       spaceId: typeof taskInfo.spaceId === "number" ? taskInfo.spaceId : -1,
@@ -1231,6 +1306,7 @@ egoCallValue = await page.evaluate(expression);`,
       status: "active",
       ownership: typeof taskInfo.ownership === "string" ? taskInfo.ownership : "agent",
       pages: Array.isArray(payload.pages) ? payload.pages.filter((page): page is string => typeof page === "string").slice(0, 20) : ["p1"],
+      ...(pageOrder ? { pageOrder } : {}),
     };
   }
 
@@ -1243,6 +1319,8 @@ egoCallValue = await page.evaluate(expression);`,
       const pages = payload.pages.filter((page): page is string => typeof page === "string").slice(0, 20);
       if (pages.length) task.pages = pages;
     }
+    const pageOrder = parsePageOrder(payload.pageOrder);
+    if (pageOrder) task.pageOrder = pageOrder;
     task.updatedAt = now;
     task.lastActiveAt = now;
   }
@@ -1300,6 +1378,8 @@ egoCallValue = await page.evaluate(expression);`,
       profileId: task.profileId,
       pageLabel: task.pages[0] ?? "p1",
       keepCount: keep.length,
+      keptPages: keep,
+      pageOrder: [...(task.pageOrder ?? [])],
       operationCode: "",
       kind: "finish",
       timeoutMs,
@@ -1561,6 +1641,7 @@ egoCallValue = await page.evaluate(expression);`,
         if (!isRecord(value) || typeof value.spaceId !== "number" || typeof value.createdAt !== "number" || typeof value.lastActiveAt !== "number") {
           throw new FreeWebError("EGO_REGISTRY_CORRUPT", "Invalid ego task registry entry", { provider: PROVIDER });
         }
+        const pageOrder = parsePageOrder(value.pageOrder);
         tasks[browseId] = {
           browseId,
           spaceId: value.spaceId,
@@ -1572,6 +1653,7 @@ egoCallValue = await page.evaluate(expression);`,
           status: value.status === "handoff" ? "handoff" : value.status === "reaping" ? "reaping" : "active",
           ownership: typeof value.ownership === "string" ? value.ownership : "agent",
           pages: Array.isArray(value.pages) ? value.pages.filter((page): page is string => typeof page === "string") : ["p1"],
+          ...(pageOrder ? { pageOrder } : {}),
           ...(typeof value.reapToken === "string" ? { reapToken: value.reapToken } : {}),
           ...(value.reapPreviousStatus === "handoff" || value.reapPreviousStatus === "active"
             ? { reapPreviousStatus: value.reapPreviousStatus }

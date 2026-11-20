@@ -17,7 +17,7 @@ import {
   type EgoSpawnFn,
 } from "../../src/providers/ego.js";
 import { isSafeNavigationUrl, parseEgoUrl, prepareEgoCall } from "../../src/providers/ego-methods.js";
-import { browseOutputSchema } from "../../src/types.js";
+import { browseOutputSchema, type BrowseEvaluateInput, type BrowseInput } from "../../src/types.js";
 
 type EgoPayload = Record<string, unknown>;
 
@@ -45,6 +45,156 @@ class FakeRunner implements EgoRunner {
     this.calls.push(request);
     const responder = this.responders.shift() ?? this.fallback;
     return await responder(request, index);
+  }
+}
+
+function parseScriptArray(source: string, pattern: RegExp): string[] {
+  const match = pattern.exec(source);
+  if (!match) return [];
+  const parsed = JSON.parse(match[1]) as unknown;
+  return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+}
+
+interface SimTab {
+  readonly id: string;
+  label: string | null;
+  url: string;
+  title: string;
+  readonly openedBy: string;
+  readonly active: boolean;
+}
+
+/**
+ * Models ego-lite 0.6.3.14: finish(keep) retains tab objects in their original order but
+ * drops their labels, and the next claim sees those unlabeled tabs. Restoration assigns
+ * labels to those exact tab objects from the saved tab-order label list.
+ */
+class LabelLifecycleRunner implements EgoRunner {
+  readonly calls: EgoRunRequest[] = [];
+  readonly adoptedAs: string[] = [];
+  workPages: string[] = [];
+  workValue: unknown = undefined;
+  lastWorkLabels: string[] = [];
+  private tabs: SimTab[] = [];
+  private nextTabId = 1;
+
+  seedTabs(specs: Array<{ label: string; url: string; title: string }>): void {
+    this.tabs = specs.map((spec, index) => ({
+      id: `tab-${this.nextTabId++}`,
+      label: spec.label,
+      url: spec.url,
+      title: spec.title,
+      openedBy: "agent",
+      active: index === 0,
+    }));
+  }
+
+  pageOrder(): string[] {
+    return this.tabs.map((tab) => tab.label).filter((label): label is string => label !== null);
+  }
+
+  labelsByTabId(): Record<string, string | null> {
+    return Object.fromEntries(this.tabs.map((tab) => [tab.id, tab.label]));
+  }
+
+  labelForUrl(url: string): string | null {
+    return this.tabs.find((tab) => tab.url === url)?.label ?? null;
+  }
+
+  changeIdentity(url: string, replacement: string, title?: string): void {
+    const tab = this.tabs.find((entry) => entry.url === url);
+    if (!tab) throw new Error(`no tab with url ${url}`);
+    tab.url = replacement;
+    tab.title = title ?? `Changed ${replacement}`;
+  }
+
+  private errorResult(request: EgoRunRequest, code: string, message: string, details: Record<string, unknown>): EgoRunResult {
+    const labels = this.pageOrder();
+    return egoResult(request, {
+      ok: false,
+      error: { name: "Error", message, code, details },
+      task: { spaceId: 7, ownership: "agent", name: "freeweb task" },
+      pages: labels,
+      pageOrder: labels,
+    });
+  }
+
+  async run(request: EgoRunRequest): Promise<EgoRunResult> {
+    this.calls.push(request);
+    const script = request.script;
+    const keptPages = parseScriptArray(script, /const KEPT_PAGES = (\[[^\]]*\]);/);
+    const pageOrder = parseScriptArray(script, /const PAGE_ORDER = (\[[^\]]*\]);/);
+    const pageLabel = /const PAGE_LABEL = "([^"]+)";/.exec(script)?.[1];
+
+    if (request.kind === "finish") {
+      const keep = keptPages.length
+        ? keptPages
+        : parseScriptArray(script, /await task\.finish\(\{ keep: (\[[^\]]*\]) \}\)/);
+      const keptTabs = this.tabs.filter((tab) => tab.label !== null && keep.includes(tab.label));
+      const order = keptTabs.map((tab) => tab.label as string);
+      // Kept tab objects stay in their original order; only their labels end.
+      this.tabs = keptTabs;
+      for (const tab of this.tabs) tab.label = null;
+      return egoResult(request, { ...finishPayload(7), pages: keep, pageOrder: order });
+    }
+
+    if (/const TASK_ID = null;/.test(script) && this.tabs.length === 0) {
+      this.seedTabs([{
+        label: pageLabel ?? "p1",
+        url: `https://page.test/${pageLabel ?? "p1"}`,
+        title: `Page ${pageLabel ?? "p1"}`,
+      }]);
+    }
+
+    // Real ego-lite hard-stops when taskSpace(id) is used to preview a finished Space.
+    if (
+      script.includes("const preview = await taskSpace(RESOLVED_ID);") &&
+      !/const TASK_ID = null;/.test(script) &&
+      this.tabs.some((tab) => tab.label === null)
+    ) {
+      return hardStopResult();
+    }
+
+    const candidates = this.tabs.filter((tab) => tab.label === null && tab.openedBy === "agent");
+    if (candidates.length > 0) {
+      const labels = [...new Set(pageOrder)];
+      candidates.forEach((tab, index) => {
+        const saved = labels[index] ?? (labels.length === 0 && keptPages.length === 1 && candidates.length === 1 ? keptPages[0] : undefined);
+        tab.label = saved ?? `p${index + 1}`;
+        this.adoptedAs.push(tab.label);
+      });
+    }
+
+    const labels = this.pageOrder();
+    if (pageLabel && !labels.includes(pageLabel)) {
+      return this.errorResult(request, "EGO_PAGE_NOT_FOUND", `Page ${pageLabel} was not found`, {
+        requestedPage: pageLabel,
+        availablePages: labels,
+      });
+    }
+
+    const explicitAs = /task\.adopt\(egoTab0\.page, \{ as: "([^"]+)" \}\)/.exec(script)?.[1];
+    if (explicitAs) {
+      const active = this.tabs.find((tab) => tab.active) ?? this.tabs[0];
+      if (active) {
+        active.label = explicitAs;
+        active.url = `https://page.test/${explicitAs}`;
+        active.title = `Page ${explicitAs}`;
+        this.adoptedAs.push(explicitAs);
+      }
+    }
+
+    const actualLabels = this.pageOrder();
+    const pages = this.workPages.length ? [...this.workPages] : actualLabels;
+    this.lastWorkLabels = [...actualLabels];
+    const value = this.workValue;
+    this.workPages = [];
+    this.workValue = undefined;
+    return egoResult(request, {
+      ...taskPayload(7, "agent", pages),
+      ...(value === undefined ? {} : { value }),
+      pageOrder: this.pageOrder(),
+    });
   }
 }
 
@@ -433,6 +583,70 @@ async function openTask(
   });
   if (!output.browseId) throw new Error("expected browseId");
   return output.browseId;
+}
+
+async function openTaskWithPages(
+  provider: EgoProvider,
+  runner: FakeRunner,
+  pages: string[],
+): Promise<string> {
+  const finish = { ...finishPayload(7), pages };
+  runner.queue(
+    (request) => egoResult(request, taskPayload(7, "agent", pages)),
+    (request) => egoResult(request, finish),
+  );
+  const output = await provider.browse({
+    action: "open",
+    name: "page label task",
+    page: pages[0] ?? "p1",
+  });
+  if (!output.browseId) throw new Error("expected browseId");
+  return output.browseId;
+}
+
+async function openAndKeepPage(
+  provider: EgoProvider,
+  runner: LabelLifecycleRunner,
+  label: string,
+): Promise<string> {
+  const opened = await provider.browse({ action: "open", name: "kept page task", page: "p1" });
+  if (!opened.browseId) throw new Error("expected browseId");
+  await provider.browse({
+    action: "call",
+    browseId: opened.browseId,
+    page: "p1",
+    method: "task.adopt",
+    args: [{ active: true, as: label }],
+  });
+  return opened.browseId;
+}
+
+async function openWithTabs(
+  dataDir: string,
+  provider: EgoProvider,
+  runner: LabelLifecycleRunner,
+  tabs: Array<{ label: string; url: string; title: string }>,
+): Promise<string> {
+  const opened = await provider.browse({ action: "open", name: "identity task", page: "p1" });
+  if (!opened.browseId) throw new Error("expected browseId");
+  runner.seedTabs(tabs);
+  const registryPath = join(dataDir, "browse", "tasks.json");
+  const registry = JSON.parse(await readFile(registryPath, "utf8")) as {
+    tasks: Record<string, { pages: string[]; pageOrder?: string[] }>;
+  };
+  registry.tasks[opened.browseId]!.pages = tabs.map((tab) => tab.label);
+  registry.tasks[opened.browseId]!.pageOrder = runner.pageOrder();
+  await writeFile(registryPath, JSON.stringify(registry));
+  return opened.browseId;
+}
+
+async function removePageOrder(dataDir: string, browseId: string): Promise<void> {
+  const registryPath = join(dataDir, "browse", "tasks.json");
+  const registry = JSON.parse(await readFile(registryPath, "utf8")) as {
+    tasks: Record<string, { pageOrder?: string[] }>;
+  };
+  delete registry.tasks[browseId]!.pageOrder;
+  await writeFile(registryPath, JSON.stringify(registry));
 }
 
 let dataDir: string;
@@ -1099,6 +1313,441 @@ describe("EgoProvider managed native API coverage", () => {
       expect(script).not.toContain("EGO_PAGE_MISSING");
       expect(output.pages).toEqual(["p1", "p2"]);
     }
+  });
+});
+
+describe("EgoProvider Page label resolution", () => {
+  it("rejects an unknown Page label for a page-targeted native call before any ego script runs", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new FakeRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openTaskWithPages(provider, runner, ["p1", "p2"]);
+    runner.reset();
+
+    await expect(provider.browse({
+      action: "call",
+      browseId,
+      page: "p9",
+      method: "page.snapshot",
+      args: [],
+    })).rejects.toMatchObject({
+      code: "EGO_PAGE_NOT_FOUND",
+      options: { details: { requestedPage: "p9", availablePages: ["p1", "p2"] } },
+    });
+    expect(runner.calls).toHaveLength(0);
+  });
+
+  it("rejects an unknown Page label for Page Evaluation before any ego script runs", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new FakeRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openTaskWithPages(provider, runner, ["p1", "p2"]);
+    runner.reset();
+
+    await expect(provider.evaluate({
+      browseId,
+      page: "p9",
+      script: "document.title",
+    })).rejects.toMatchObject({
+      code: "EGO_PAGE_NOT_FOUND",
+      options: { details: { requestedPage: "p9", availablePages: ["p1", "p2"] } },
+    });
+    expect(runner.calls).toHaveLength(0);
+  });
+
+  it("keeps the deterministic p1 default and still fails when p1 is absent", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new FakeRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openTaskWithPages(provider, runner, ["p2"]);
+    runner.reset();
+
+    await expect(provider.evaluate({ browseId, script: "document.title" } as BrowseEvaluateInput)).rejects.toMatchObject({
+      code: "EGO_PAGE_NOT_FOUND",
+      options: { details: { requestedPage: "p1", availablePages: ["p2"] } },
+    });
+    await expect(provider.browse({
+      action: "call",
+      browseId,
+      method: "page.snapshot",
+      args: [],
+    } as unknown as BrowseInput)).rejects.toMatchObject({
+      code: "EGO_PAGE_NOT_FOUND",
+      options: { details: { requestedPage: "p1", availablePages: ["p2"] } },
+    });
+    expect(runner.calls).toHaveLength(0);
+  });
+
+  it("leaves Task-level native calls unchanged when a Page label is unknown", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new FakeRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openTaskWithPages(provider, runner, ["p1", "p2"]);
+    runner.reset();
+    runner.queue(
+      (request) => egoResult(request, taskPayload(7, "agent", ["p1", "p2"])),
+      (request) => egoResult(request, { ...finishPayload(7), pages: ["p1", "p2"] }),
+    );
+
+    const output = await provider.browse({
+      action: "call",
+      browseId,
+      page: "p9",
+      method: "task.pages",
+      args: [],
+    });
+    expect(output.status).toBe("ok");
+    expect(runner.calls).toHaveLength(2);
+  });
+
+  it("restores a kept non-p1 label on claim and continues Page work", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new LabelLifecycleRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openAndKeepPage(provider, runner, "p2");
+
+    const registry = JSON.parse(await readFile(join(dataDir, "browse", "tasks.json"), "utf8")) as {
+      tasks: Record<string, { pages: string[] }>;
+    };
+    expect(registry.tasks[browseId]!.pages).toEqual(["p2"]);
+
+    const before = runner.calls.length;
+    const worked = await provider.browse({
+      action: "call",
+      browseId,
+      page: "p2",
+      method: "page.snapshot",
+      args: [],
+    });
+    expect(worked).toMatchObject({ status: "ok", result: { observed: true }, pages: ["p2"] });
+    expect(runner.calls[before]!.script).toContain("const PAGE_ORDER = ");
+    expect(runner.adoptedAs.at(-1)).toBe("p2");
+    expect(runner.lastWorkLabels).toEqual(["p2"]);
+
+    const evaluated = await provider.evaluate({ browseId, page: "p2", script: "document.title" });
+    expect(evaluated).toMatchObject({ status: "ok", result: { observed: true }, pages: ["p2"] });
+  });
+
+  it("restores original labels when keep order differs from tab order", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new LabelLifecycleRunner();
+    const provider = new EgoProvider(config, { runner });
+    const p1Url = "https://page.test/p1";
+    const p2Url = "https://page.test/p2";
+    const browseId = await openWithTabs(dataDir, provider, runner, [
+      { label: "p1", url: p1Url, title: "Page 1" },
+      { label: "p2", url: p2Url, title: "Page 2" },
+    ]);
+
+    runner.workPages = ["p2", "p1"];
+    runner.workValue = { popup: { label: "p1" } };
+    const first = await provider.browse({
+      action: "call",
+      browseId,
+      page: "p2",
+      method: "page.snapshot",
+      args: [],
+    });
+    expect(first).toMatchObject({ status: "ok", pages: ["p2", "p1"] });
+
+    const before = runner.calls.length;
+    const second = await provider.browse({
+      action: "call",
+      browseId,
+      page: "p2",
+      method: "page.snapshot",
+      args: [],
+    });
+    expect(second).toMatchObject({ status: "ok", pages: ["p2"] });
+    expect(runner.lastWorkLabels).toEqual(["p1", "p2"]);
+    expect(runner.adoptedAs.slice(-2).sort()).toEqual(["p1", "p2"]);
+    expect(runner.calls[before]!.script).toContain("const PAGE_ORDER = ");
+  });
+
+  it("restores the correct label when a subset of tab-order Pages is kept", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new LabelLifecycleRunner();
+    const provider = new EgoProvider(config, { runner });
+    const p1Url = "https://page.test/p1";
+    const p2Url = "https://page.test/p2";
+    const p3Url = "https://page.test/p3";
+    const browseId = await openWithTabs(dataDir, provider, runner, [
+      { label: "p1", url: p1Url, title: "Page 1" },
+      { label: "p2", url: p2Url, title: "Page 2" },
+      { label: "p3", url: p3Url, title: "Page 3" },
+    ]);
+
+    runner.workPages = ["p2"];
+    const first = await provider.browse({
+      action: "call",
+      browseId,
+      page: "p2",
+      method: "page.snapshot",
+      args: [],
+    });
+    expect(first).toMatchObject({ status: "ok", pages: ["p2"] });
+
+    const second = await provider.evaluate({ browseId, page: "p2", script: "document.title" });
+    expect(second).toMatchObject({ status: "ok", pages: ["p2"] });
+    expect(runner.lastWorkLabels).toEqual(["p2"]);
+    expect(runner.labelForUrl(p1Url)).toBeNull();
+    expect(runner.labelForUrl(p3Url)).toBeNull();
+  });
+
+  it("keeps restored labels after a failed exact-label claim so retry is non-destructive", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new LabelLifecycleRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openWithTabs(dataDir, provider, runner, [
+      { label: "p1", url: "https://page.test/p1", title: "Page 1" },
+      { label: "p2", url: "https://page.test/p2", title: "Page 2" },
+    ]);
+
+    runner.workPages = ["p1"];
+    await provider.browse({ action: "call", browseId, page: "p1", method: "page.snapshot", args: [] });
+    const registryPath = join(dataDir, "browse", "tasks.json");
+    const registry = JSON.parse(await readFile(registryPath, "utf8")) as {
+      tasks: Record<string, { pages: string[] }>;
+    };
+    registry.tasks[browseId]!.pages = ["p1", "p2"];
+    await writeFile(registryPath, JSON.stringify(registry));
+    const before = runner.calls.length;
+
+    await expect(provider.browse({
+      action: "call",
+      browseId,
+      page: "p2",
+      method: "page.snapshot",
+      args: [],
+    })).rejects.toMatchObject({ code: "EGO_PAGE_NOT_FOUND" });
+    expect(runner.pageOrder()).toEqual(["p1"]);
+    expect(runner.calls.length).toBe(before + 1);
+
+    const retry = await provider.browse({
+      action: "call",
+      browseId,
+      page: "p1",
+      method: "page.snapshot",
+      args: [],
+    });
+    expect(retry).toMatchObject({ status: "ok", pages: ["p1"] });
+    expect(runner.lastWorkLabels).toEqual(["p1"]);
+  });
+
+  it("restores labels for duplicate about:blank tabs without relying on url/title", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new LabelLifecycleRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openWithTabs(dataDir, provider, runner, [
+      { label: "p1", url: "about:blank", title: "Blank" },
+      { label: "p2", url: "about:blank", title: "Blank" },
+    ]);
+
+    runner.workPages = ["p2", "p1"];
+    runner.workValue = { popup: { label: "p1" } };
+    await provider.browse({ action: "call", browseId, page: "p2", method: "page.snapshot", args: [] });
+    const worked = await provider.browse({ action: "call", browseId, page: "p2", method: "page.snapshot", args: [] });
+
+    expect(worked.status).toBe("ok");
+    expect(runner.lastWorkLabels).toEqual(["p1", "p2"]);
+  });
+
+  it("restores a kept label after navigation changes url and title", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new LabelLifecycleRunner();
+    const provider = new EgoProvider(config, { runner });
+    const p2Url = "https://page.test/p2";
+    const browseId = await openWithTabs(dataDir, provider, runner, [
+      { label: "p1", url: "https://page.test/p1", title: "Page 1" },
+      { label: "p2", url: p2Url, title: "Page 2" },
+    ]);
+
+    runner.workPages = ["p2"];
+    await provider.browse({ action: "call", browseId, page: "p2", method: "page.snapshot", args: [] });
+    runner.changeIdentity(p2Url, "https://page.test/navigated", "Navigated");
+
+    const worked = await provider.browse({ action: "call", browseId, page: "p2", method: "page.snapshot", args: [] });
+    expect(worked.status).toBe("ok");
+    expect(runner.lastWorkLabels).toEqual(["p2"]);
+  });
+
+  it("restores a kept label after a title-only change", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new LabelLifecycleRunner();
+    const provider = new EgoProvider(config, { runner });
+    const p2Url = "https://page.test/p2";
+    const browseId = await openWithTabs(dataDir, provider, runner, [
+      { label: "p1", url: "https://page.test/p1", title: "Page 1" },
+      { label: "p2", url: p2Url, title: "Page 2" },
+    ]);
+
+    runner.workPages = ["p2"];
+    await provider.browse({ action: "call", browseId, page: "p2", method: "page.snapshot", args: [] });
+    runner.changeIdentity(p2Url, p2Url, "Renamed");
+
+    const worked = await provider.browse({ action: "call", browseId, page: "p2", method: "page.snapshot", args: [] });
+    expect(worked.status).toBe("ok");
+    expect(runner.lastWorkLabels).toEqual(["p2"]);
+  });
+
+  it("uses registry labels deterministically for a legacy single-Page row", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new LabelLifecycleRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openWithTabs(dataDir, provider, runner, [
+      { label: "p2", url: "https://page.test/p2", title: "Page 2" },
+    ]);
+
+    runner.workPages = ["p2"];
+    await provider.browse({ action: "call", browseId, page: "p2", method: "page.snapshot", args: [] });
+    await removePageOrder(dataDir, browseId);
+
+    const worked = await provider.browse({ action: "call", browseId, page: "p2", method: "page.snapshot", args: [] });
+    expect(worked.status).toBe("ok");
+    expect(runner.lastWorkLabels).toEqual(["p2"]);
+  });
+
+  it("adopts every tab under ego's labels for an unlabeled legacy multi-Page row", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new LabelLifecycleRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openWithTabs(dataDir, provider, runner, [
+      { label: "p1", url: "https://page.test/p1", title: "Page 1" },
+      { label: "p2", url: "https://page.test/p2", title: "Page 2" },
+    ]);
+
+    runner.workPages = ["p2", "p1"];
+    runner.workValue = { popup: { label: "p1" } };
+    await provider.browse({ action: "call", browseId, page: "p2", method: "page.snapshot", args: [] });
+    // finish() has now unlabeled both surviving tabs; the registry row is legacy.
+    await removePageOrder(dataDir, browseId);
+
+    const worked = await provider.browse({ action: "call", browseId, page: "p2", method: "page.snapshot", args: [] });
+    expect(worked.status).toBe("ok");
+    expect(runner.lastWorkLabels).toEqual(["p1", "p2"]);
+    expect(runner.adoptedAs.slice(-2)).toEqual(["p1", "p2"]);
+    const registry = JSON.parse(await readFile(join(dataDir, "browse", "tasks.json"), "utf8")) as {
+      tasks: Record<string, { pageOrder?: string[] }>;
+    };
+    expect(registry.tasks[browseId]!.pageOrder).toEqual(["p2"]);
+    expect(runner.calls.some((call) => call.script.includes("const preview = await taskSpace(RESOLVED_ID);"))).toBe(false);
+  });
+
+  it("uses ego's labels when a legacy saved list is shorter than surviving tabs", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new LabelLifecycleRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openWithTabs(dataDir, provider, runner, [
+      { label: "p1", url: "https://page.test/p1", title: "Page 1" },
+      { label: "p2", url: "https://page.test/p2", title: "Page 2" },
+    ]);
+
+    runner.workPages = ["p2", "p1"];
+    runner.workValue = { popup: { label: "p1" } };
+    await provider.browse({ action: "call", browseId, page: "p2", method: "page.snapshot", args: [] });
+    const registryPath = join(dataDir, "browse", "tasks.json");
+    const registry = JSON.parse(await readFile(registryPath, "utf8")) as {
+      tasks: Record<string, { pages: string[]; pageOrder?: string[] }>;
+    };
+    registry.tasks[browseId]!.pages = ["p2"];
+    delete registry.tasks[browseId]!.pageOrder;
+    await writeFile(registryPath, JSON.stringify(registry));
+
+    const worked = await provider.browse({ action: "call", browseId, page: "p2", method: "page.snapshot", args: [] });
+    expect(worked.status).toBe("ok");
+    expect(runner.lastWorkLabels).toEqual(["p1", "p2"]);
+    expect(new Set(runner.lastWorkLabels).size).toBe(2);
+    const after = JSON.parse(await readFile(registryPath, "utf8")) as {
+      tasks: Record<string, { pageOrder?: string[] }>;
+    };
+    expect(after.tasks[browseId]!.pageOrder).toEqual(["p2"]);
+  });
+
+  it("persists restored labels on a failed exact-label check so a retry succeeds", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new LabelLifecycleRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openWithTabs(dataDir, provider, runner, [
+      { label: "p1", url: "https://page.test/p1", title: "Page 1" },
+      { label: "p2", url: "https://page.test/p2", title: "Page 2" },
+    ]);
+    const registryPath = join(dataDir, "browse", "tasks.json");
+    const legacy = JSON.parse(await readFile(registryPath, "utf8")) as {
+      tasks: Record<string, { pages: string[]; pageOrder?: string[] }>;
+    };
+    legacy.tasks[browseId]!.pages = ["p3"];
+    delete legacy.tasks[browseId]!.pageOrder;
+    await writeFile(registryPath, JSON.stringify(legacy));
+
+    await expect(provider.browse({
+      action: "call",
+      browseId,
+      page: "p3",
+      method: "page.snapshot",
+      args: [],
+    })).rejects.toMatchObject({
+      code: "EGO_PAGE_NOT_FOUND",
+      options: {
+        details: {
+          error: { details: { requestedPage: "p3", availablePages: ["p1", "p2"] } },
+        },
+      },
+    });
+
+    const persisted = JSON.parse(await readFile(registryPath, "utf8")) as {
+      tasks: Record<string, { pages: string[]; pageOrder?: string[]; ownership: string }>;
+    };
+    expect(persisted.tasks[browseId]).toMatchObject({
+      pages: ["p1", "p2"],
+      pageOrder: ["p1", "p2"],
+      ownership: "agent",
+    });
+
+    const retry = await provider.browse({
+      action: "call",
+      browseId,
+      page: "p1",
+      method: "page.snapshot",
+      args: [],
+    });
+    expect(retry).toMatchObject({ status: "ok", pages: ["p1"] });
+  });
+
+  it("still rejects a genuinely missing label after a kept non-p1 round", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new LabelLifecycleRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openAndKeepPage(provider, runner, "p2");
+    const before = runner.calls.length;
+
+    await expect(provider.evaluate({ browseId, page: "p3", script: "document.title" })).rejects.toMatchObject({
+      code: "EGO_PAGE_NOT_FOUND",
+      options: { details: { requestedPage: "p3", availablePages: ["p2"] } },
+    });
+    expect(runner.calls.length).toBe(before);
+  });
+
+  it("accepts an exact available Page label", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new FakeRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openTaskWithPages(provider, runner, ["p1", "p2"]);
+    runner.reset();
+    runner.queue(
+      (request) => egoResult(request, taskPayload(7, "agent", ["p1", "p2"])),
+      (request) => egoResult(request, { ...finishPayload(7), pages: ["p1", "p2"] }),
+    );
+
+    const output = await provider.browse({
+      action: "call",
+      browseId,
+      page: "p2",
+      method: "page.snapshot",
+      args: [],
+    });
+    expect(output.status).toBe("ok");
+    expect(output.pages).toEqual(["p2"]);
+    expect(runner.calls).toHaveLength(2);
   });
 });
 
