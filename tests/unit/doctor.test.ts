@@ -6,12 +6,15 @@ import { loadConfig } from "../../src/config.js";
 import { runDoctor } from "../../src/doctor.js";
 import { readPackageMetadata } from "../../src/package-metadata.js";
 
+/** The key injected into the process and asserted absent from provider child environments. */
+const injectedKey = "doctor-secret-key";
+
 let root: string;
 let previousKey: string | undefined;
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "freeweb-doctor-test-"));
   previousKey = process.env.TINYFISH_API_KEY;
-  process.env.TINYFISH_API_KEY = "doctor-secret-key";
+  process.env.TINYFISH_API_KEY = injectedKey;
 });
 afterEach(async () => {
   if (previousKey === undefined) delete process.env.TINYFISH_API_KEY;
@@ -39,7 +42,7 @@ describe("doctor provider environment", () => {
 
     const environment = await readFile(environmentOutput, "utf8");
     expect(environment).not.toContain("TINYFISH_API_KEY");
-    expect(environment).not.toContain("doctor-secret-key");
+    expect(environment).not.toContain(injectedKey);
     expect(environment).toContain("PATH=");
   });
 });

@@ -6,6 +6,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const cliPath = resolve("dist/cli.js");
 
+/** The API key injected for the redaction assertions below. */
+const injectedKey = "qyznrt-mblk-vdw";
+
 let root: string;
 let home: string;
 let binDir: string;
@@ -106,7 +109,7 @@ describe("doctor text output", () => {
     await writeConfig({ firecrawl: { binary: firecrawl }, ego: { binary: ego } });
 
     const result = runCli(["doctor"], {
-      TINYFISH_API_KEY: "qyznrt-mblk-vdw",
+      TINYFISH_API_KEY: injectedKey,
       FREEWEB_TINYFISH_FREE_ONLY_CONFIRMED: "true",
     });
 
@@ -127,8 +130,8 @@ describe("doctor text output", () => {
     };
     expect(printed.dataDir).toBe(join(home, "data"));
     expect(printed.tinyfish.apiKey).toBe("[redacted]");
-    expect(result.stdout).not.toContain("qyznrt-mblk-vdw");
-    expect(result.stderr).not.toContain("qyznrt-mblk-vdw");
+    expect(result.stdout).not.toContain(injectedKey);
+    expect(result.stderr).not.toContain(injectedKey);
 
     // Only `--version` probes ran: doctor never started a provider.
     expect((await readFile(invocations, "utf8")).trim().split("\n").sort()).toEqual(["--version", "--version"]);
