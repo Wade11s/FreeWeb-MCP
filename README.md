@@ -14,7 +14,7 @@ See [Security model](docs/security.md) before enabling user Profiles or unrestri
 
 ## Requirements
 
-- Node.js 22.12+
+- Node.js 22.12+ (the exact floor is the `engines.node` value in `package.json`; `doctor` enforces that value rather than a second copy)
 - `firecrawl-local` **v0.1.0** for Fetch/Crawl/Map (the certified baseline)
 - Optional TinyFish API key for Search/Fetch
 - Optional [ego lite](https://lite.ego.app/) on macOS or Windows for Browse
@@ -38,6 +38,55 @@ freeweb-mcp -v | --version  Print the version
 
 The MCP server starts only through the explicit `mcp` subcommand; there is no implicit no-argument startup. Unknown commands, unknown options, unknown help targets, and excess positional arguments fail with exit code 1 and a diagnostic on stderr. Help and version never load business configuration; `mcp` and `doctor` load and validate it.
 
+### doctor
+
+```bash
+freeweb-mcp doctor          # human-readable report on stdout
+freeweb-mcp doctor --json   # the same report as JSON on stdout
+```
+
+Text mode writes one status line per check, an overall result, and the effective configuration:
+
+```text
+PASS node: v22.12.0
+PASS firecrawl-local: firecrawl-local 0.1.0
+PASS ego-browser: ego-browser 1.2.3
+PASS tinyfish: Enabled by explicit free-only account attestation; no wallet request was made
+PASS ego-platform: darwin
+PASS data-directory: /Users/you/.freeweb-mcp
+Result: ok
+Configuration:
+{
+  "dataDir": "/Users/you/.freeweb-mcp",
+  "tinyfish": { "freeOnlyConfirmed": true, "apiKey": "[redacted]", ... },
+  ...
+}
+```
+
+- The status word is `PASS` for a passing check, `FAIL` for a failed required check, and `WARN` for a failed optional check. A check may add an indented `  warning: ...` line; today only an uncertified Firecrawl Local version does.
+- `Result:` is `ok` or `failed`.
+- `Configuration:` is followed by the effective configuration (file plus environment overrides) as pretty-printed JSON, with the TinyFish key replaced by `[redacted]`.
+- The checks are `node`, `firecrawl-local`, `ego-browser`, `tinyfish`, `ego-platform`, and `data-directory`, always in that order. `node` enforces the `engines.node` floor from `package.json` (currently Node.js 22.12.0). `tinyfish` reports configuration and account attestation only.
+
+`--json` writes only the report to stdout, with no help text, diagnostics, or configuration prose in that stream:
+
+```json
+{
+  "ok": false,
+  "checks": [
+    { "name": "node", "ok": true, "required": true, "version": "v22.12.0" },
+    { "name": "firecrawl-local", "ok": false, "required": true, "message": "Command failed: firecrawl-local --version" },
+    { "name": "tinyfish", "ok": false, "required": false, "message": "Disabled: TINYFISH_API_KEY is not set" }
+  ]
+}
+```
+
+A real report always contains one entry per check (the example above is trimmed); `version`, `message`, and `warning` appear only when they carry information. Exit status is 0 when every required check passes — optional `WARN` checks and `warning` lines do not fail it — and 1 when a required check fails.
+
+If the business configuration cannot be read or is invalid, doctor exits 1. In text mode the diagnostic is on stderr and stdout stays empty; with `--json` the diagnostic is on stderr and stdout still holds a parseable report whose single check is a failed required `configuration` check. Doctor never starts business providers and never makes a TinyFish wallet or API request: provider binaries are only asked for `--version`.
+
+Unknown options and extra positional arguments are usage errors: exit code 1, diagnostic on stderr, nothing on stdout.
+
 ## Build and check
 
 ```bash
@@ -47,7 +96,7 @@ node dist/cli.js doctor
 node dist/cli.js mcp   # same as npm start
 ```
 
-`doctor` checks local binaries and configuration without starting business providers or making TinyFish wallet/API calls. Other Firecrawl versions are reported as uncertified; v0.1.0 is the integration-test baseline.
+`doctor` checks local binaries and configuration without starting business providers or making TinyFish wallet/API calls; see [doctor](#doctor) for the exact output contract. Other Firecrawl versions are reported as uncertified; v0.1.0 is the integration-test baseline.
 
 ## Initialization
 
