@@ -15,18 +15,31 @@ const silentContext: CliContext = {
 /** The parts of a declared command the probe must mirror exactly. */
 interface CommandShape {
   optionFlags: string[];
+  mandatoryOptions: string[];
+  allowExcessArguments: boolean | undefined;
   arguments: { name: string; required: boolean; variadic: boolean }[];
 }
 
 function shapeOf(command: Command): CommandShape {
   return {
     optionFlags: command.options.map((option) => option.flags),
+    mandatoryOptions: command.options.filter((option) => option.mandatory).map((option) => option.flags),
+    allowExcessArguments: excessArgumentPolicy(command),
     arguments: command.registeredArguments.map((argument) => ({
       name: argument.name(),
       required: argument.required,
       variadic: argument.variadic,
     })),
   };
+}
+
+/**
+ * Commander keeps this policy on a private field with no public reader; the
+ * drift test compares it so a looser probe cannot let help/version mask an
+ * excess-argument error the real program would reject.
+ */
+function excessArgumentPolicy(command: Command): boolean | undefined {
+  return (command as unknown as { _allowExcessArguments?: boolean })._allowExcessArguments;
 }
 
 /**
@@ -58,10 +71,12 @@ describe("validation probe stays in lockstep with the real program", () => {
     // options so parsing it can only validate argv. The help flag is held
     // lazily outside `.options` until parse, configured once in the shared
     // baseProgram, so it cannot differ between the trees; every other
-    // program-level option must be declared on both.
+    // program-level option must be declared on both, with the same mandatory
+    // and excess-argument policy.
     const shortCircuitFlags = ["-h, --help", "-v, --version"];
     expect(probe.options.map((option) => option.flags)).toEqual(
       program.options.map((option) => option.flags).filter((flags) => !shortCircuitFlags.includes(flags)),
     );
+    expect(excessArgumentPolicy(probe)).toBe(excessArgumentPolicy(program));
   });
 });

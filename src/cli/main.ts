@@ -197,6 +197,9 @@ async function rejectMaskedUsageErrors(argv: readonly string[], program: Command
 function rejectUnknownHelpTopic(rest: readonly string[], program: Command): void {
   if (rest.length !== 2 || rest[0] !== "help") return;
   const topic = rest[1]!;
+  // `help --` and `help -- <topic>` are the terminator, not a topic; the real
+  // parse decides those shapes.
+  if (topic === "--") return;
   if (program.commands.some((command) => command.name() === topic)) return;
   throw new Error(`error: unknown help topic '${topic}'`);
 }
