@@ -22,7 +22,7 @@ import { containsEnvironmentCredential } from "./secrets.js";
 export interface InitDeps {
   readonly env: NodeJS.ProcessEnv;
   readonly configPath: string;
-  /** Registered provider components. #22 registers Firecrawl only. */
+  /** Registered provider components: Firecrawl Local and optional ego-lite. */
   readonly components: readonly InitComponent[];
   readonly store: ConfigStore;
   readonly runDoctor: (config: AppConfig) => Promise<{ ok: boolean; checks: DoctorCheck[] }>;
@@ -195,7 +195,6 @@ async function runInitCore(io: InitIo, deps: InitDeps): Promise<number> {
   }
   io.writeLine("Next steps:");
   io.writeLine("  - To register FreeWeb-MCP with an MCP client, run `freeweb-mcp print-config`; init never reads or writes other clients' configurations.");
-  io.writeLine("  - Automated Firecrawl installation and optional ego-lite setup arrive in later releases.");
   if (summary.exitCode !== 0 || doctorFailed) {
     io.writeLine("  Initialization did not complete; rerun `freeweb-mcp init` after addressing the items above (it is safe to rerun).");
   }

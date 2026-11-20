@@ -1,14 +1,14 @@
 # Verification report
 
-Latest local verification for the MVP plus the first Initialization ticket:
+Latest local verification for the MVP plus the Initialization tickets (#21-#25):
 
 ## Automated checks
 
 ```text
 npm run check
   TypeScript: passed
-  Unit tests: 488 passed across 21 files
-  In-memory, real-stdio and external CLI integration tests: 74 passed across 6 files
+  Unit tests: 533 passed across 22 files
+  In-memory, real-stdio and external CLI integration tests: 97 passed across 7 files
   Build: passed
 
 npm audit
@@ -19,7 +19,7 @@ The stdio tests spawn `dist/cli.js` with the explicit `mcp` command and verify t
 
 `init` has two distinct automated seams. In-process `runInit` integration tests use temporary HOME/config directories, controlled environments, and fake provider executables to cover filesystem-only detection before consent, plan display, refusal and terminal EOF, damaged-configuration backup/rebuild and secret-safe refusal, stale-path repair confirmation/decline and environment-selected replacements, valid-config preservation and missing-default completion, atomic writes and 0600/0700 permissions, non-overwriting private backups, interrupted writes and rerun recovery, owned loopback Cloud Off health checks and bounded cleanup, cleanup failures, certified/uncertified versions versus health failures, required doctor failure and its incomplete-run footer, doctor invocation without MCP startup, other-client non-interference, and exit-code combinations. These tests do not spawn the built CLI.
 
-The built-CLI tests separately cover global/command help, strict option and argument rejection, and non-TTY refusal without reads, writes, or provider launches. On macOS with `expect`, a real pseudo-terminal drives exactly three interactive scenarios through `dist/cli.js`: the confirmed happy path (including verification, configuration write, file mode 0600, doctor, and exit 0), plan decline without changes, and malformed-configuration backup/rebuild. Stale paths, preservation, uncertified-versus-health failure, backup non-overwrite, directory permissions, interrupted writes, and doctor-failure exit are covered only at the `runInit` seam; no PTY coverage is claimed for them. No live GUI onboarding was performed.
+The built-CLI tests separately cover global/command help, strict option and argument rejection, and non-TTY refusal without reads, writes, or provider launches. On macOS with `expect`, a real pseudo-terminal drives the interactive `init` scenarios through `dist/cli.js`: the confirmed happy path (verification, configuration write, file mode 0600, doctor, exit 0), plan decline without changes, malformed-configuration backup/rebuild, automatic certified Firecrawl installation with fake Cargo/Rust/C-compiler tools (exact crates.io request, missing-prerequisite `Pending`, failed install, partial install, rerun without reinstall), TinyFish attestation prompts including a key that is a substring of the attestation sentence, and the ego-lite handoff against fake `open`/`explorer.exe` openers with simulated Windows and Linux platforms. No routine test launches a real installer, a real GUI, or a real Cargo build, and Windows behaviour is simulated only.
 
 ## Live providers
 

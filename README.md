@@ -129,6 +129,14 @@ Only the boolean attestation is contributed to configuration, after that explici
 
 Initialization makes no TinyFish wallet, business Search/Fetch, SDK, or other paid-risk verification request. Consequently, `Configured` means only that the environment credential is present and the explicit attestation is effective. Successful Initialization and doctor's TinyFish check do not prove that the key works, that the account has quota, or that TinyFish Search/Fetch is ready.
 
+### ego-lite handoff (optional)
+
+The optional ego-lite component is available in `init`. On macOS and Windows it asks before opening the official download page <https://lite.ego.app/> after plan confirmation (`open` on macOS, `explorer.exe` on Windows); answering no returns `Skipped` with no browser launch and lets the rest of Initialization continue. Answering yes then waits for a **separate explicit confirmation** that you installed the app and completed GUI onboarding. Official step-by-step guidance is at <https://github.com/citrolabs/ego-lite/blob/main/skills/ego-browser/references/install.md>. The handoff does not execute the official remote shell installer, remove macOS quarantine attributes, request elevation, upgrade/downgrade/reinstall an existing app, or choose any Browser Profile, cookie, password, session, bookmark, or extension import option. Those choices remain entirely yours.
+
+Only after that confirmation does Initialization check `ego-browser --version` and the native Node.js entry (`ego-browser nodejs -e ...`). A newly discovered absolute path is recorded only when no explicit value existed. An explicit `ego.binary` is preserved as written: if it resolves to a different absolute path (including when `EGO_BROWSER_BIN` overrides it), Initialization proposes a separate old → new approval instead of silently rewriting it. Incomplete onboarding is `Pending`; an opener or verification failure is `Failed`; unsupported platforms (including Linux) are `Skipped` with an explanation and no opener launch. Optional `Pending`/`Skipped` does not fail the required local baseline, while a selected `Failed` operation does.
+
+Installing the application and passing these probes is **not** configured Browse readiness: Managed Browse still depends on your allowed Profile, GUI onboarding state, and browser-data decisions, and FreeWeb-MCP never imports browser data for you. Routine automated tests use fake openers, fake executables and temporary homes; Windows is simulated only until a Windows live environment is available via `FREEWEB_INIT_TEST_MODE=1` with `FREEWEB_INIT_PLATFORM=win32`, and production ignores `FREEWEB_INIT_PLATFORM`. No routine test launches a real installer or GUI.
+
 ## Configuration
 
 The default configuration path is:

@@ -1,4 +1,5 @@
 import type { InitComponent } from "../component.js";
+import { createEgoComponent } from "./ego.js";
 import { createFirecrawlComponent } from "./firecrawl.js";
 import { createTinyFishComponent } from "./tinyfish.js";
 
@@ -7,5 +8,5 @@ import { createTinyFishComponent } from "./tinyfish.js";
  * plus one entry here; the orchestrator has no provider-specific write path.
  */
 export function registeredInitComponents(): readonly InitComponent[] {
-  return [createFirecrawlComponent(), createTinyFishComponent()];
+  return [createFirecrawlComponent(), createTinyFishComponent(), createEgoComponent()];
 }
