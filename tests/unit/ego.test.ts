@@ -351,14 +351,22 @@ async function until(predicate: () => boolean, label: string): Promise<void> {
  * advancing a fixed amount the timer may not have been registered for yet.
  */
 async function closeWithFakeTimers(provider: EgoProvider): Promise<void> {
-  vi.useFakeTimers();
+  // Keep setImmediate real so filesystem promises can finish between fake-time
+  // advances. Faking it starved those I/O turns on the parallel Ubuntu CI
+  // worker, letting this loop finish before close() registered its lock timer.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
     let settled = false;
     const closing = provider.close().finally(() => {
       settled = true;
     });
-    for (let attempt = 0; attempt < 100 && !settled; attempt += 1) {
-      await vi.advanceTimersByTimeAsync(REGISTRY_LOCK_TIMEOUT_MS);
+    for (let attempt = 0; attempt < 200 && !settled; attempt += 1) {
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      // Do not advance time before the lock timeout (or another relevant
+      // timer) actually exists; real I/O may need several turns to reach it.
+      if (vi.getTimerCount() > 0) await vi.advanceTimersByTimeAsync(REGISTRY_LOCK_TIMEOUT_MS);
     }
     expect(settled).toBe(true);
     vi.useRealTimers();

@@ -129,7 +129,7 @@ if (args[0] === "--version") { console.log("firecrawl-local " + version); proces
 if (args[0] !== "serve") process.exit(2);
 if (behavior === "exit") process.exit(1);
 if (behavior === "hang") {
-  process.on("SIGTERM", () => { void note("sigterm"); process.exit(0); });
+  process.on("SIGTERM", () => { void note("sigterm").then(() => process.exit(0)); });
   setInterval(() => {}, 1000);
 } else {
   const port = Number(args[args.indexOf("--port") + 1]);
@@ -141,7 +141,11 @@ if (behavior === "hang") {
     } else { res.writeHead(404); res.end("{}"); }
   });
   server.listen(port, "127.0.0.1");
-  process.on("SIGTERM", () => { void note("sigterm"); server.close(() => { void note("serve-exit"); process.exit(0); }); });
+  process.on("SIGTERM", () => {
+    void note("sigterm").then(() => {
+      server.close(() => { void note("serve-exit").then(() => process.exit(0)); });
+    });
+  });
 }
 `;
   await writeFile(binary, script, { mode: 0o755 });
