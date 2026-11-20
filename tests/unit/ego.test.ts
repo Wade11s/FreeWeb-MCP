@@ -11,7 +11,6 @@ import type { AppConfig } from "../../src/config.js";
 import {
   EgoProcessRunner,
   EgoProvider,
-  REGISTRY_LOCK_TIMEOUT_MS,
   type EgoRunRequest,
   type EgoRunResult,
   type EgoRunner,
@@ -342,38 +341,6 @@ async function until(predicate: () => boolean, label: string): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
   throw new Error(`timed out waiting for ${label}`);
-}
-
-/**
- * Runs close() while another call holds the registry lock, driving its bounded lock wait
- * with fake timers. Shutdown reads the registry without the lock first, so its lock timer
- * only exists after a few real I/O turns: advance in slices until it settles instead of
- * advancing a fixed amount the timer may not have been registered for yet.
- */
-async function closeWithFakeTimers(provider: EgoProvider): Promise<void> {
-  // Keep setImmediate real so filesystem promises can finish between fake-time
-  // advances. Faking it starved those I/O turns on the parallel Ubuntu CI
-  // worker, letting this loop finish before close() registered its lock timer.
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  try {
-    let settled = false;
-    const closing = provider.close().finally(() => {
-      settled = true;
-    });
-    for (let attempt = 0; attempt < 200 && !settled; attempt += 1) {
-      await new Promise<void>((resolve) => {
-        setImmediate(resolve);
-      });
-      // Do not advance time before the lock timeout (or another relevant
-      // timer) actually exists; real I/O may need several turns to reach it.
-      if (vi.getTimerCount() > 0) await vi.advanceTimersByTimeAsync(REGISTRY_LOCK_TIMEOUT_MS);
-    }
-    expect(settled).toBe(true);
-    vi.useRealTimers();
-    await closing;
-  } finally {
-    vi.useRealTimers();
-  }
 }
 
 function egoResult(
@@ -1869,7 +1836,7 @@ describe("EgoProvider shutdown guard", () => {
   it("finishes the snapshot Space even when the registry lock stays busy", async () => {
     const config = await makeConfig(dataDir);
     const runner = new WedgedRunner();
-    const provider = new EgoProvider(config, { runner });
+    const provider = new EgoProvider(config, { runner, registryLockTimeoutMs: 10 });
 
     const opened = await provider.browse({ action: "open", page: "p1" });
     expect(opened.spaceId).toBe(7);
@@ -1881,7 +1848,7 @@ describe("EgoProvider shutdown guard", () => {
     const wedged = provider.browse({ action: "status", browseId: opened.browseId, page: "p1" });
     await until(() => runner.calls.length === callsBeforeClose + 1, "wedged status call to start");
 
-    await closeWithFakeTimers(provider);
+    await provider.close();
 
     // Shutdown read the registry without the lock and really finished the Space: a busy
     // lock must never make close() skip the Space cleanup it just observed.
@@ -1898,7 +1865,7 @@ describe("EgoProvider shutdown guard", () => {
   it("never runs a queued registry request after close", async () => {
     const config = await makeConfig(dataDir);
     const runner = new GatedManagedRunner();
-    const provider = new EgoProvider(config, { runner });
+    const provider = new EgoProvider(config, { runner, registryLockTimeoutMs: 10 });
 
     const opened = await provider.browse({ action: "open", page: "p1" });
     runner.parkNextManaged();
@@ -1909,7 +1876,7 @@ describe("EgoProvider shutdown guard", () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
     const callsBeforeClose = runner.calls.length;
 
-    await closeWithFakeTimers(provider);
+    await provider.close();
 
     runner.releaseParked();
     await inFlight;
@@ -1991,7 +1958,7 @@ describe("EgoProvider close identity", () => {
   it("never writes an in-flight snapshot back into the closed registry", async () => {
     const config = await makeConfig(dataDir);
     const runner = new GatedManagedRunner({ ...taskPayload(7, "agent", ["p1", "p2"]) });
-    const provider = new EgoProvider(config, { runner });
+    const provider = new EgoProvider(config, { runner, registryLockTimeoutMs: 10 });
     const opened = await provider.browse({ action: "open", page: "p1" });
     const registryPath = join(dataDir, "browse", "tasks.json");
     const before = await readFile(registryPath, "utf8");
@@ -2002,7 +1969,7 @@ describe("EgoProvider close identity", () => {
     await until(() => runner.parked === 1, "in-flight status call to park");
     const callsBeforeClose = runner.calls.length;
 
-    await closeWithFakeTimers(provider);
+    await provider.close();
 
     // Shutdown finished the snapshot Space although the parked call still held the lock.
     expect(runner.calls.slice(callsBeforeClose).filter((call) => call.kind === "finish")).toHaveLength(1);

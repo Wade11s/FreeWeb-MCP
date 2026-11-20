@@ -61,6 +61,8 @@ export interface EgoProviderOptions {
   now?: () => number;
   uuid?: () => string;
   lookupFn?: typeof lookup;
+  /** Test seam for bounded lock waits; production defaults to REGISTRY_LOCK_TIMEOUT_MS. */
+  registryLockTimeoutMs?: number;
 }
 
 type EgoPayload = Record<string, unknown>;
@@ -587,6 +589,7 @@ export class EgoProvider {
    */
   private lockBusy = false;
   private readonly lockWaiters: Array<() => void> = [];
+  private readonly registryLockTimeoutMs: number;
   private closed = false;
   private nodeActive = 0;
   private readonly nodeWaiters: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
@@ -607,6 +610,7 @@ export class EgoProvider {
     this.nowFn = resolved.now ?? Date.now;
     this.uuidFn = resolved.uuid ?? randomUUID;
     this.lookupFn = resolved.lookupFn ?? lookup;
+    this.registryLockTimeoutMs = resolved.registryLockTimeoutMs ?? REGISTRY_LOCK_TIMEOUT_MS;
     if (!this.ego.allowedProfiles.includes(this.ego.defaultProfile)) {
       throw new FreeWebError("INVALID_CONFIG", "ego.defaultProfile must be in ego.allowedProfiles", { provider: PROVIDER });
     }
@@ -716,7 +720,7 @@ export class EgoProvider {
       // Shutdown is the one writer a closed provider still accepts: skipping this delete
       // would leave finished Spaces registered forever.
       if (changed) await this.writeRegistry(registry, { allowClosed: true });
-    }, REGISTRY_LOCK_TIMEOUT_MS);
+    }, this.registryLockTimeoutMs);
   }
 
   async reapExpired(): Promise<void> {
@@ -753,7 +757,7 @@ export class EgoProvider {
       if (expired.length === 0) return expired;
       await this.writeRegistry(registry);
       return expired;
-    }, REGISTRY_LOCK_TIMEOUT_MS);
+    }, this.registryLockTimeoutMs);
     if (!candidates || candidates.length === 0) return;
 
     // Finish outside the lock: the runtime call is the slow part and other registry work
@@ -794,7 +798,7 @@ export class EgoProvider {
       if (changed) await this.writeRegistry(registry);
       // Reaping is background maintenance: if the lock cannot be taken it stops here and
       // never writes back a snapshot that another holder has already superseded.
-    }, REGISTRY_LOCK_TIMEOUT_MS);
+    }, this.registryLockTimeoutMs);
   }
 
   /**
