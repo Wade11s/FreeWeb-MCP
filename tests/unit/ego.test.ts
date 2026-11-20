@@ -48,6 +48,75 @@ class FakeRunner implements EgoRunner {
   }
 }
 
+function parseScriptArray(source: string, pattern: RegExp): string[] {
+  const match = pattern.exec(source);
+  if (!match) return [];
+  const parsed = JSON.parse(match[1]) as unknown;
+  return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+}
+
+/**
+ * Models ego-lite 0.6.3.14 label lifetime: finish(keep) retains Pages but ends their labels,
+ * and the next claim adopts those unlabeled tabs. An adopt without `as` relabels them p1.
+ */
+class LabelLifecycleRunner implements EgoRunner {
+  readonly calls: EgoRunRequest[] = [];
+  readonly adoptedAs: string[] = [];
+  private labels: string[] = [];
+  private unlabeled: string[] = [];
+
+  async run(request: EgoRunRequest): Promise<EgoRunResult> {
+    this.calls.push(request);
+    const script = request.script;
+    const keptPages = parseScriptArray(script, /const KEPT_PAGES = (\[[^\]]*\]);/);
+    const pageLabel = /const PAGE_LABEL = "([^"]+)";/.exec(script)?.[1];
+
+    if (request.kind === "finish") {
+      const kept = keptPages.length
+        ? keptPages
+        : parseScriptArray(script, /await task\.finish\(\{ keep: (\[[^\]]*\]) \}\)/);
+      this.unlabeled = [...kept];
+      this.labels = [];
+      return egoResult(request, { ...finishPayload(7), pages: kept });
+    }
+
+    if (/const TASK_ID = null;/.test(script)) {
+      this.labels = pageLabel ? [pageLabel] : ["p1"];
+    }
+
+    if (this.unlabeled.length > 0) {
+      if (script.includes("task.adopt(tab.page, { as:")) {
+        this.labels = keptPages.length ? [...keptPages] : [...this.unlabeled];
+        this.adoptedAs.push(...this.labels);
+      } else {
+        this.labels = this.unlabeled.map(() => "p1");
+      }
+      this.unlabeled = [];
+    }
+
+    if (pageLabel && !this.labels.includes(pageLabel)) {
+      return egoResult(request, {
+        ok: false,
+        error: {
+          name: "Error",
+          message: `Page ${pageLabel} was not found`,
+          code: "EGO_PAGE_NOT_FOUND",
+          details: { requestedPage: pageLabel, availablePages: [...this.labels] },
+        },
+      });
+    }
+
+    const explicitAs = /task\.adopt\(egoTab0\.page, \{ as: "([^"]+)" \}\)/.exec(script)?.[1];
+    if (explicitAs) {
+      this.labels = [explicitAs];
+      this.adoptedAs.push(explicitAs);
+    }
+
+    const pages = this.labels.length ? [...this.labels] : ["p1"];
+    return egoResult(request, { ...taskPayload(7, "agent", pages) });
+  }
+}
+
 /** Runner whose node scripts stay in flight until the test releases them. */
 class ConcurrencyRunner implements EgoRunner {
   private readonly scripts: string[] = [];
@@ -452,6 +521,23 @@ async function openTaskWithPages(
   });
   if (!output.browseId) throw new Error("expected browseId");
   return output.browseId;
+}
+
+async function openAndKeepPage(
+  provider: EgoProvider,
+  runner: LabelLifecycleRunner,
+  label: string,
+): Promise<string> {
+  const opened = await provider.browse({ action: "open", name: "kept page task", page: "p1" });
+  if (!opened.browseId) throw new Error("expected browseId");
+  await provider.browse({
+    action: "call",
+    browseId: opened.browseId,
+    page: "p1",
+    method: "task.adopt",
+    args: [{ active: true, as: label }],
+  });
+  return opened.browseId;
 }
 
 let dataDir: string;
@@ -1203,6 +1289,48 @@ describe("EgoProvider Page label resolution", () => {
     });
     expect(output.status).toBe("ok");
     expect(runner.calls).toHaveLength(2);
+  });
+
+  it("restores a kept non-p1 label on claim and continues Page work", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new LabelLifecycleRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openAndKeepPage(provider, runner, "p2");
+
+    const registry = JSON.parse(await readFile(join(dataDir, "browse", "tasks.json"), "utf8")) as {
+      tasks: Record<string, { pages: string[] }>;
+    };
+    expect(registry.tasks[browseId]!.pages).toEqual(["p2"]);
+
+    const before = runner.calls.length;
+    const worked = await provider.browse({
+      action: "call",
+      browseId,
+      page: "p2",
+      method: "page.snapshot",
+      args: [],
+    });
+    expect(worked).toMatchObject({ status: "ok", result: { observed: true }, pages: ["p2"] });
+    expect(runner.calls[before]!.script).toContain('const KEPT_PAGES = ["p2"]');
+    expect(runner.calls[before]!.script).toContain("task.adopt(tab.page, { as: KEPT_PAGES[index] })");
+    expect(runner.adoptedAs.at(-1)).toBe("p2");
+
+    const evaluated = await provider.evaluate({ browseId, page: "p2", script: "document.title" });
+    expect(evaluated).toMatchObject({ status: "ok", result: { observed: true }, pages: ["p2"] });
+  });
+
+  it("still rejects a genuinely missing label after a kept non-p1 round", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new LabelLifecycleRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openAndKeepPage(provider, runner, "p2");
+    const before = runner.calls.length;
+
+    await expect(provider.evaluate({ browseId, page: "p3", script: "document.title" })).rejects.toMatchObject({
+      code: "EGO_PAGE_NOT_FOUND",
+      options: { details: { requestedPage: "p3", availablePages: ["p2"] } },
+    });
+    expect(runner.calls.length).toBe(before);
   });
 
   it("accepts an exact available Page label", async () => {

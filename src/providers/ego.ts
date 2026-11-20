@@ -107,6 +107,8 @@ interface ManagedScriptOptions {
   profileId: string | null;
   pageLabel: string;
   keepCount: number;
+  /** Labels of the Pages this round must keep, in the same order as the kept tabs. */
+  keptPages: readonly string[];
   operationCode: string;
   marker: string;
   /** Absolute path the script uses when the payload is too large for stdout. */
@@ -435,18 +437,19 @@ interface AcquisitionScript {
   readonly body: string;
 }
 
-function acquisitionScript(options: Pick<ManagedScriptOptions, "taskId" | "name" | "profileId" | "keepCount" | "pageLabel" | "requiresPage">, withPage: boolean): AcquisitionScript {
+function acquisitionScript(options: Pick<ManagedScriptOptions, "taskId" | "name" | "profileId" | "keepCount" | "keptPages" | "pageLabel" | "requiresPage">, withPage: boolean): AcquisitionScript {
   const createCall = options.profileId === null
     ? "await taskSpace(SPACE_NAME)"
     : `await taskSpace(SPACE_NAME, { profileId: ${json(options.profileId)} })`;
-  // Only re-claim unlabeled tabs when this invocation keeps something; a
-  // finish({ keep: [] }) must not adopt pages it is about to release.
-  const adoptBlock = options.keepCount > 0
-    ? `if (wasClaimed && KEEP_COUNT > 0) {
+  // finish(keep) retains Pages but ends their labels, so a claim must re-adopt each
+  // kept tab with its original label. A plain adopt would silently relabel p2 as p1.
+  // finish({ keep: [] }) adopts nothing because it is about to release those tabs.
+  const adoptBlock = options.keptPages.length > 0
+    ? `if (wasClaimed && KEPT_PAGES.length > 0) {
   const tabs = await task.tabs();
   const candidates = tabs.filter((tab) => !tab.label && tab.openedBy !== "user" && tab.openedBy !== "unknown");
-  for (const tab of candidates.slice(0, KEEP_COUNT)) {
-    await task.adopt(tab.page);
+  for (const [index, tab] of candidates.slice(0, KEPT_PAGES.length).entries()) {
+    await task.adopt(tab.page, { as: KEPT_PAGES[index] });
   }
 }
 `
@@ -461,6 +464,7 @@ function acquisitionScript(options: Pick<ManagedScriptOptions, "taskId" | "name"
   const constants = `const TASK_ID = ${json(options.taskId)};
 const SPACE_NAME = ${json(options.name)};
 const KEEP_COUNT = ${options.keepCount};
+const KEPT_PAGES = ${json(options.keptPages)};
 let RESOLVED_ID = TASK_ID === null ? -1 : TASK_ID;
 let task = null;
 ${withPage ? `const PAGE_LABEL = ${json(options.pageLabel)};\n` : ""}`;
@@ -537,12 +541,12 @@ ${pageGuard}${options.operationCode}
 
 function buildFinishScript(options: FinishScriptOptions): string {
   const keep = options.keep.map((label) => json(label)).join(", ");
-  // Adopt only as many unlabeled tabs as this finish actually keeps. Deriving the
-  // count from the stale `task.pages` would adopt pages that `finish({ keep: [] })`
-  // is about to drop (close/reap), leaving them claimed as agent pages.
+  // Adopt only the unlabeled tabs this finish keeps, restoring each label before
+  // finish({ keep }) selects it. Deriving the count from stale `task.pages` would
+  // adopt pages that `finish({ keep: [] })` is about to release (close/reap).
   const keepCount = options.keep.length;
   const acquisition = acquisitionScript(
-    { taskId: options.task.spaceId, name: options.task.name, profileId: options.task.profileId, keepCount, pageLabel: options.task.pages[0] ?? "p1" },
+    { taskId: options.task.spaceId, name: options.task.name, profileId: options.task.profileId, keepCount, keptPages: options.keep, pageLabel: options.task.pages[0] ?? "p1" },
     false,
   );
   return `${emitHelper(options.marker, options.artifactPath)}
@@ -925,6 +929,7 @@ export class EgoProvider {
         profileId,
         pageLabel: input.page,
         keepCount: 1,
+        keptPages: [input.page ?? "p1"],
         operationCode,
         kind: "managed",
       }));
@@ -1220,13 +1225,14 @@ egoCallValue = await page.evaluate(expression);`,
     return task.spaceId >= 0 ? { spaceId: task.spaceId } : {};
   }
 
-  private managedBase(task: EgoTaskRecord, pageLabel: string): Pick<ManagedScriptOptions, "taskId" | "name" | "profileId" | "pageLabel" | "keepCount"> {
+  private managedBase(task: EgoTaskRecord, pageLabel: string): Pick<ManagedScriptOptions, "taskId" | "name" | "profileId" | "pageLabel" | "keepCount" | "keptPages"> {
     return {
       taskId: task.spaceId,
       name: task.name,
       profileId: task.profileId,
       pageLabel,
       keepCount: task.pages.length,
+      keptPages: [...task.pages],
     };
   }
 
@@ -1320,6 +1326,7 @@ egoCallValue = await page.evaluate(expression);`,
       profileId: task.profileId,
       pageLabel: task.pages[0] ?? "p1",
       keepCount: keep.length,
+      keptPages: keep,
       operationCode: "",
       kind: "finish",
       timeoutMs,
