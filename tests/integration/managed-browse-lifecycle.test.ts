@@ -1,6 +1,6 @@
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import type { CallToolResult, McpServer } from "@modelcontextprotocol/server";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -219,5 +219,53 @@ describe("MCP-visible Managed Browse handoff lifecycle", () => {
     });
     expect(worked.isError).not.toBe(true);
     expect(worked.structuredContent).toMatchObject({ browseId, spaceId: SPACE_ID, status: "ok" });
+  });
+
+  it("rejects unknown Page labels through public tools without invoking ego work", async () => {
+    const opened = await client.callTool({
+      name: "browse",
+      arguments: { action: "open", name: "page guard task" },
+    });
+    expect(opened.isError).not.toBe(true);
+    const browseId = (opened.structuredContent as { browseId: string }).browseId;
+    const callsAfterOpen = runtime.runner.calls.length;
+
+    const native = await client.callTool({
+      name: "browse",
+      arguments: { action: "call", browseId, page: "p9", method: "page.snapshot", args: [] },
+    });
+    expect(native.isError).toBe(true);
+    expect(JSON.stringify(native.content)).toContain("EGO_PAGE_NOT_FOUND");
+    expect(JSON.stringify(native.content)).toContain('"requestedPage":"p9"');
+    expect(JSON.stringify(native.content)).toContain('"availablePages":["p1"]');
+    expect(runtime.runner.calls.length).toBe(callsAfterOpen);
+
+    const evaluated = await client.callTool({
+      name: "browse_evaluate",
+      arguments: { browseId, page: "p9", script: "document.title" },
+    });
+    expect(evaluated.isError).toBe(true);
+    expect(JSON.stringify(evaluated.content)).toContain("EGO_PAGE_NOT_FOUND");
+    expect(JSON.stringify(evaluated.content)).toContain('"requestedPage":"p9"');
+    expect(JSON.stringify(evaluated.content)).toContain('"availablePages":["p1"]');
+    expect(runtime.runner.calls.length).toBe(callsAfterOpen);
+
+    const registryPath = join(root, "browse", "tasks.json");
+    const registry = JSON.parse(await readFile(registryPath, "utf8")) as {
+      tasks: Record<string, { pages: string[] }>;
+    };
+    registry.tasks[browseId]!.pages = ["p2"];
+    await writeFile(registryPath, JSON.stringify(registry));
+    const callsAfterRegistryEdit = runtime.runner.calls.length;
+
+    const defaulted = await client.callTool({
+      name: "browse_evaluate",
+      arguments: { browseId, script: "document.title" },
+    });
+    expect(defaulted.isError).toBe(true);
+    expect(JSON.stringify(defaulted.content)).toContain("EGO_PAGE_NOT_FOUND");
+    expect(JSON.stringify(defaulted.content)).toContain('"requestedPage":"p1"');
+    expect(JSON.stringify(defaulted.content)).toContain('"availablePages":["p2"]');
+    expect(runtime.runner.calls.length).toBe(callsAfterRegistryEdit);
   });
 });

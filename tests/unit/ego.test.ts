@@ -435,6 +435,25 @@ async function openTask(
   return output.browseId;
 }
 
+async function openTaskWithPages(
+  provider: EgoProvider,
+  runner: FakeRunner,
+  pages: string[],
+): Promise<string> {
+  const finish = { ...finishPayload(7), pages };
+  runner.queue(
+    (request) => egoResult(request, taskPayload(7, "agent", pages)),
+    (request) => egoResult(request, finish),
+  );
+  const output = await provider.browse({
+    action: "open",
+    name: "page label task",
+    page: pages[0] ?? "p1",
+  });
+  if (!output.browseId) throw new Error("expected browseId");
+  return output.browseId;
+}
+
 let dataDir: string;
 
 beforeEach(async () => {
@@ -1099,6 +1118,114 @@ describe("EgoProvider managed native API coverage", () => {
       expect(script).not.toContain("EGO_PAGE_MISSING");
       expect(output.pages).toEqual(["p1", "p2"]);
     }
+  });
+});
+
+describe("EgoProvider Page label resolution", () => {
+  it("rejects an unknown Page label for a page-targeted native call before any ego script runs", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new FakeRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openTaskWithPages(provider, runner, ["p1", "p2"]);
+    runner.reset();
+
+    await expect(provider.browse({
+      action: "call",
+      browseId,
+      page: "p9",
+      method: "page.snapshot",
+      args: [],
+    })).rejects.toMatchObject({
+      code: "EGO_PAGE_NOT_FOUND",
+      options: { details: { requestedPage: "p9", availablePages: ["p1", "p2"] } },
+    });
+    expect(runner.calls).toHaveLength(0);
+  });
+
+  it("rejects an unknown Page label for Page Evaluation before any ego script runs", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new FakeRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openTaskWithPages(provider, runner, ["p1", "p2"]);
+    runner.reset();
+
+    await expect(provider.evaluate({
+      browseId,
+      page: "p9",
+      script: "document.title",
+    })).rejects.toMatchObject({
+      code: "EGO_PAGE_NOT_FOUND",
+      options: { details: { requestedPage: "p9", availablePages: ["p1", "p2"] } },
+    });
+    expect(runner.calls).toHaveLength(0);
+  });
+
+  it("keeps the deterministic p1 default and still fails when p1 is absent", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new FakeRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openTaskWithPages(provider, runner, ["p2"]);
+    runner.reset();
+
+    await expect(provider.evaluate({ browseId, script: "document.title" })).rejects.toMatchObject({
+      code: "EGO_PAGE_NOT_FOUND",
+      options: { details: { requestedPage: "p1", availablePages: ["p2"] } },
+    });
+    await expect(provider.browse({
+      action: "call",
+      browseId,
+      method: "page.snapshot",
+      args: [],
+    })).rejects.toMatchObject({
+      code: "EGO_PAGE_NOT_FOUND",
+      options: { details: { requestedPage: "p1", availablePages: ["p2"] } },
+    });
+    expect(runner.calls).toHaveLength(0);
+  });
+
+  it("leaves Task-level native calls unchanged when a Page label is unknown", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new FakeRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openTaskWithPages(provider, runner, ["p1", "p2"]);
+    runner.reset();
+    runner.queue(
+      (request) => egoResult(request, taskPayload(7, "agent", ["p1", "p2"])),
+      (request) => egoResult(request, { ...finishPayload(7), pages: ["p1", "p2"] }),
+    );
+
+    const output = await provider.browse({
+      action: "call",
+      browseId,
+      page: "p9",
+      method: "task.pages",
+      args: [],
+    });
+    expect(output.status).toBe("ok");
+    expect(runner.calls).toHaveLength(2);
+  });
+
+  it("accepts an exact available Page label", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new FakeRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openTaskWithPages(provider, runner, ["p1", "p2"]);
+    runner.reset();
+    runner.queue(
+      (request) => egoResult(request, taskPayload(7, "agent", ["p1", "p2"])),
+      (request) => egoResult(request, { ...finishPayload(7), pages: ["p1", "p2"] }),
+    );
+
+    const output = await provider.browse({
+      action: "call",
+      browseId,
+      page: "p2",
+      method: "page.snapshot",
+      args: [],
+    });
+    expect(output.status).toBe("ok");
+    expect(output.pages).toEqual(["p2"]);
+    expect(runner.calls).toHaveLength(2);
   });
 });
 
