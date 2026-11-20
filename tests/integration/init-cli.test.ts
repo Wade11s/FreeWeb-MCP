@@ -131,22 +131,39 @@ interface PtyResult {
   output: string;
 }
 
+/** Searches file contents, not variable names, for an exact credential value. */
+async function expectTreeToOmit(directory: string, secret: string): Promise<void> {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      await expectTreeToOmit(path, secret);
+    } else if (entry.isFile()) {
+      expect(await readFile(path, "utf8"), path).not.toContain(secret);
+    }
+  }
+}
+
 /**
  * Drives the built CLI behind a real pseudo-terminal using expect: answers
  * are sent only after each `[y/N]` prompt appears, and the child's exit
  * status propagates through expect's wait.
+ *
+ * Surplus prompts beyond the supplied answers receive `surplusAnswer` (a
+ * decline by default) so a test that only cares about the required baseline
+ * is not left hanging when an optional component starts asking questions.
  */
-function runCliInPty(answers: readonly string[]): Promise<PtyResult> {
+function runCliInPty(answers: readonly string[], overrides: Record<string, string> = {}, surplusAnswer = "n"): Promise<PtyResult> {
   const script = join(root, "drive.exp");
   const program = [
     "set timeout 60",
     "set answers [lindex $argv 0]",
-    "set cmd [lrange $argv 1 end]",
+    "set surplus [lindex $argv 1]",
+    "set cmd [lrange $argv 2 end]",
     "spawn {*}$cmd",
     "set i 0",
     "expect {",
     "  -re {y/N} {",
-    "    if {$i < [llength $answers]} { send -- \"[lindex $answers $i]\\r\" }",
+    "    if {$i < [llength $answers]} { send -- \"[lindex $answers $i]\\r\" } else { send -- \"$surplus\\r\" }",
     "    incr i",
     "    exp_continue",
     "  }",
@@ -162,10 +179,11 @@ function runCliInPty(answers: readonly string[]): Promise<PtyResult> {
       const child = spawn(expectBinary, [
         script,
         answers.join(" "),
+        surplusAnswer,
         process.execPath,
         cliPath,
         "init",
-      ], { stdio: ["ignore", "pipe", "pipe"], timeout: 60_000, env: cliEnv() });
+      ], { stdio: ["ignore", "pipe", "pipe"], timeout: 60_000, env: cliEnv(overrides) });
       let output = "";
       let settled = false;
       const timer = setTimeout(() => {
@@ -238,7 +256,7 @@ describe("built CLI non-TTY init", () => {
 describe.skipIf(!hasExpect)("built CLI interactive init behind a pseudo-terminal", () => {
   it("confirms the plan, verifies, writes private configuration, and exits 0", async () => {
     await writeFakeFirecrawl();
-    const result = await runCliInPty(["y"]);
+    const result = await runCliInPty(["y", "n"]);
     expect(result.status).toBe(0);
     expect(result.output).toContain("FreeWeb-MCP initialization plan:");
     expect(result.output).toContain("Firecrawl Local: Installed");
@@ -264,10 +282,163 @@ describe.skipIf(!hasExpect)("built CLI interactive init behind a pseudo-terminal
     expect(existsSync(join(root, "firecrawl-invocations.log"))).toBe(false);
   });
 
+  it("keeps a present TinyFish key Pending without attestation and exits 0 with a ready baseline", async () => {
+    await writeFakeFirecrawl();
+    const secret = "integration-tinyfish-key-no-attestation";
+    const result = await runCliInPty(["y", "y", "n"], { TINYFISH_API_KEY: secret });
+
+    expect(result.status).toBe(0);
+    expect(result.output).toContain("TinyFish Search/Fetch: Pending");
+    expect(result.output).toContain("explicit Free attestation was not confirmed");
+    expect(result.output).not.toContain(secret);
+    const raw = JSON.parse(await readFile(configPath, "utf8")) as {
+      tinyfish: { freeOnlyConfirmed?: boolean; apiKey?: string };
+      firecrawl: { searchFallback?: boolean };
+    };
+    expect(raw.tinyfish.freeOnlyConfirmed).toBe(false);
+    expect(raw.tinyfish.apiKey).toBeUndefined();
+    expect(raw.firecrawl.searchFallback).toBe(false);
+  });
+
+  it("persists only the attestation, never invokes the TinyFish CLI, and is idempotent on rerun", async () => {
+    await writeFakeFirecrawl();
+    const secret = "integration-tinyfish-key-attested";
+    const cliLog = join(root, "tinyfish-cli.log");
+    await writeFile(join(binDir, "tinyfish"), `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(cliLog)}, JSON.stringify(process.argv.slice(2)) + "\\n");\nprocess.exit(99);\n`, { mode: 0o755 });
+
+    const first = await runCliInPty(["y", "y", "y"], { TINYFISH_API_KEY: secret });
+    expect(first.status).toBe(0);
+    expect(first.output).toContain("TinyFish Search/Fetch: Configured");
+    expect(first.output).toContain("This TinyFish API key belongs to an account with no wallet spending capability; free credits, a zero balance, disabled auto-reload, and installation success are not substitutes for this attestation.");
+    expect(first.output).toContain("Successful Initialization does not prove TinyFish service or account readiness");
+    expect(first.output).not.toContain(secret);
+    expect(existsSync(cliLog)).toBe(false);
+
+    const content = await readFile(configPath, "utf8");
+    const raw = JSON.parse(content) as {
+      tinyfish: { freeOnlyConfirmed?: boolean; apiKey?: string };
+      firecrawl: { searchFallback?: boolean };
+    };
+    expect(raw.tinyfish.freeOnlyConfirmed).toBe(true);
+    expect(raw.tinyfish.apiKey).toBeUndefined();
+    expect(raw.firecrawl.searchFallback).toBe(false);
+    expect(content).not.toContain(secret);
+
+    const second = await runCliInPty(["y"], { TINYFISH_API_KEY: secret });
+    expect(second.status).toBe(0);
+    expect(second.output).toContain("TinyFish Search/Fetch: Configured");
+    expect(second.output).toContain("no content changes were made");
+    expect(second.output).not.toContain("Confirm the Free attestation:");
+    expect(second.output).not.toContain(secret);
+    expect(await readFile(configPath, "utf8")).toBe(content);
+    expect(existsSync(cliLog)).toBe(false);
+    await expectTreeToOmit(root, secret);
+  });
+
+  it("keeps the exact attestation intact when the key is a substring of it", async () => {
+    await writeFakeFirecrawl();
+    const result = await runCliInPty(["y", "y", "y"], { TINYFISH_API_KEY: "wallet" });
+    const attestation = "This TinyFish API key belongs to an account with no wallet spending capability; free credits, a zero balance, disabled auto-reload, and installation success are not substitutes for this attestation.";
+
+    expect(result.status).toBe(0);
+    expect(result.output).toContain(`persist freeOnlyConfirmed only after confirming: "${attestation}"`);
+    expect(result.output).toContain(`Confirm the Free attestation: ${attestation} [y/N]`);
+    expect(result.output).not.toContain("no [redacted] spending capability");
+    expect(result.output).toContain("TinyFish Search/Fetch: Configured");
+    const raw = JSON.parse(await readFile(configPath, "utf8")) as { tinyfish: { freeOnlyConfirmed?: boolean } };
+    expect(raw.tinyfish.freeOnlyConfirmed).toBe(true);
+  });
+
+  it("keeps TinyFish Pending and unattested until the manual environment step is completed", async () => {
+    await writeFakeFirecrawl();
+    const first = await runCliInPty(["y", "y", "y"]);
+    expect(first.status).toBe(0);
+    expect(first.output).toContain("TinyFish Search/Fetch: Pending");
+    expect(first.output).toContain("TINYFISH_API_KEY is not set");
+    expect(first.output).toContain("environment of the process that runs FreeWeb-MCP");
+    let raw = JSON.parse(await readFile(configPath, "utf8")) as { tinyfish: { freeOnlyConfirmed?: boolean } };
+    expect(raw.tinyfish.freeOnlyConfirmed).toBe(false);
+
+    const secret = "integration-tinyfish-added-later";
+    const second = await runCliInPty(["y", "y", "y"], { TINYFISH_API_KEY: secret });
+    expect(second.status).toBe(0);
+    expect(second.output).toContain("TinyFish Search/Fetch: Configured");
+    expect(second.output).not.toContain(secret);
+    raw = JSON.parse(await readFile(configPath, "utf8")) as { tinyfish: { freeOnlyConfirmed?: boolean } };
+    expect(raw.tinyfish.freeOnlyConfirmed).toBe(true);
+  });
+
+  it("persists an environment-only attestation only after the explicit prompt", async () => {
+    await writeFakeFirecrawl();
+    const result = await runCliInPty(["y", "y", "y"], {
+      TINYFISH_API_KEY: "integration-env-only-attestation",
+      FREEWEB_TINYFISH_FREE_ONLY_CONFIRMED: "true",
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.output).toContain("Confirm the Free attestation:");
+    expect(result.output).toContain("TinyFish Search/Fetch: Configured");
+    const raw = JSON.parse(await readFile(configPath, "utf8")) as { tinyfish: { freeOnlyConfirmed?: boolean } };
+    expect(raw.tinyfish.freeOnlyConfirmed).toBe(true);
+  });
+
+  it("uses the same whitespace-only key presence as doctor and runtime", async () => {
+    await writeFakeFirecrawl();
+    const result = await runCliInPty(["y", "y", "y"], { TINYFISH_API_KEY: "   " });
+
+    expect(result.status).toBe(0);
+    expect(result.output).toContain("TinyFish Search/Fetch: Configured");
+    expect(result.output).toContain("PASS tinyfish: Enabled");
+    const raw = JSON.parse(await readFile(configPath, "utf8")) as { tinyfish: { freeOnlyConfirmed?: boolean } };
+    expect(raw.tinyfish.freeOnlyConfirmed).toBe(true);
+  });
+
+  it("allows optional TinyFish setup to be skipped without blocking the required baseline", async () => {
+    await writeFakeFirecrawl();
+    const secret = "integration-tinyfish-skipped";
+    const result = await runCliInPty(["y", "n"], { TINYFISH_API_KEY: secret });
+    expect(result.status).toBe(0);
+    expect(result.output).toContain("TinyFish Search/Fetch: Skipped");
+    expect(result.output).toContain("Firecrawl Local: Installed");
+    expect(result.output).toContain("Configuration: Configured");
+    expect(result.output).not.toContain(secret);
+    const raw = JSON.parse(await readFile(configPath, "utf8")) as {
+      tinyfish: { freeOnlyConfirmed?: boolean };
+      firecrawl: { searchFallback?: boolean };
+    };
+    expect(raw.tinyfish.freeOnlyConfirmed).toBe(false);
+    expect(raw.firecrawl.searchFallback).toBe(false);
+  });
+
+  it("keeps the exact key out of output, config, backup, profiles, client files, and logs", async () => {
+    await writeFakeFirecrawl();
+    const secret = "integration-tinyfish-exact-secret-canary";
+    await mkdir(homeDir, { recursive: true });
+    const untouched = new Map([
+      [join(homeDir, ".bashrc"), "export EXISTING_SETTING=unchanged\n"],
+      [join(homeDir, ".zshrc"), "# existing profile\n"],
+      [join(homeDir, ".claude.json"), JSON.stringify({ mcpServers: { existing: { command: "keep" } } })],
+    ]);
+    for (const [path, content] of untouched) await writeFile(path, content);
+    await writeFile(configPath, "{ damaged without credentials");
+
+    const result = await runCliInPty(["y", "y", "y"], { TINYFISH_API_KEY: secret });
+    expect(result.status).toBe(0);
+    expect(result.output).toContain("TinyFish Search/Fetch: Configured");
+    expect(result.output).not.toContain(secret);
+    expect(await readFile(join(configDir, "config.backup.json"), "utf8")).toBe("{ damaged without credentials");
+    for (const [path, content] of untouched) expect(await readFile(path, "utf8")).toBe(content);
+
+    // This includes stdout/stderr captured above, plan/summary/warnings in
+    // those streams, the new config and backup, fake-provider logs, HOME
+    // profiles, MCP client definitions, and every other file under temp HOME.
+    await expectTreeToOmit(root, secret);
+  });
+
   it("recovers a malformed configuration after explicit backup-and-rebuild consent", async () => {
     await writeFakeFirecrawl();
     await writeFile(configPath, "{ not valid json");
-    const result = await runCliInPty(["y"]);
+    const result = await runCliInPty(["y", "n"]);
     expect(result.status).toBe(0);
     expect(result.output).toContain("never treated as absent");
     expect(await readFile(join(configDir, "config.backup.json"), "utf8")).toBe("{ not valid json");

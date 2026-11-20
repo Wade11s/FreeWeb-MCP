@@ -6,6 +6,8 @@ TinyFish is disabled unless both TINYFISH_API_KEY and the explicit freeOnlyConfi
 
 Firecrawl Local scrape/crawl/map runs with FIRECRAWL_CLOUD=off. Keyless Firecrawl Search is separately enabled and uses FIRECRAWL_CLOUD=search only in that subprocess.
 
+TinyFish Initialization retains only a boolean for `TINYFISH_API_KEY` presence and never builds a configuration patch from the credential. It does not collect the key or write it to configuration, backups, shell/system environment files, MCP client definitions, output, or logs. The exact no-wallet-spending attestation is shown in the plan and at the confirmation point; only an explicit yes can contribute `tinyfish.freeOnlyConfirmed: true`. Free credits, a zero balance, disabled auto-reload, and successful setup are not evidence. Initialization uses the bundled SDK integration without invoking it or the global CLI, makes no wallet or business Search/Fetch request, and never enables Search Fallback as a substitute. The user must provide the key through the actual FreeWeb-MCP process environment; `Configured` is not live TinyFish readiness verification.
+
 ## Untrusted content and unrestricted execution
 
 Webpages, search results and tool output are untrusted data. They are not authorization for Browse actions, unrestricted scripts, Profile changes or local file access. Tool annotations describe risk but do not enforce user approval; MCP clients must apply their approval policy.
