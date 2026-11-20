@@ -14,7 +14,7 @@ See [Security model](docs/security.md) before enabling user Profiles or unrestri
 
 ## Requirements
 
-- Node.js 22+
+- Node.js 22.12+
 - `firecrawl-local` **v0.1.0** for Fetch/Crawl/Map (the certified baseline)
 - Optional TinyFish API key for Search/Fetch
 - Optional [ego lite](https://lite.ego.app/) on macOS or Windows for Browse
@@ -22,12 +22,28 @@ See [Security model](docs/security.md) before enabling user Profiles or unrestri
 
 Firecrawl installation follows the [official Local quickstart](https://docs.firecrawl.dev/quickstarts/firecrawl-local). Providers are installed separately and are not redistributed by this package.
 
+## Command line
+
+The package exposes one executable, `freeweb-mcp` (`dist/cli.js` in a checkout):
+
+```text
+freeweb-mcp               Print help; never starts the server
+freeweb-mcp mcp           Start the stdio MCP server
+freeweb-mcp doctor [--json]  Check local provider configuration
+freeweb-mcp print-config  Print an example MCP client configuration
+freeweb-mcp help [command]  Print global or command help
+freeweb-mcp -v | --version  Print the version
+```
+
+The MCP server starts only through the explicit `mcp` subcommand; there is no implicit no-argument startup. Unknown commands, unknown options, unknown help targets, and excess positional arguments fail with exit code 1 and a diagnostic on stderr. Help and version never load business configuration; `mcp` and `doctor` load and validate it.
+
 ## Build and check
 
 ```bash
 npm install
 npm run build
 node dist/cli.js doctor
+node dist/cli.js mcp   # same as npm start
 ```
 
 `doctor` checks local binaries and configuration without starting business providers or making TinyFish wallet/API calls. Other Firecrawl versions are reported as uncertified; v0.1.0 is the integration-test baseline.
@@ -86,24 +102,33 @@ Firecrawl and ego private-network access have separate opt-in settings. Do not e
 
 ## MCP client
 
-Run:
-
-```bash
-node dist/cli.js print-config
-```
-
-A typical local configuration is:
+The MCP client must start the server with the explicit `mcp` subcommand. From a checkout:
 
 ```json
 {
   "mcpServers": {
     "freeweb": {
       "command": "/absolute/path/to/node",
-      "args": ["/absolute/path/to/FreeWeb-MCP/dist/cli.js"]
+      "args": ["/absolute/path/to/FreeWeb-MCP/dist/cli.js", "mcp"]
     }
   }
 }
 ```
+
+When the package is installed, the client only needs the executable, which must be resolvable in the MCP client's `PATH`:
+
+```json
+{
+  "mcpServers": {
+    "freeweb": {
+      "command": "freeweb-mcp",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+`node dist/cli.js print-config` prints the checkout example above (Node executable plus the explicit `mcp` subcommand). In MCP mode, stdout is reserved for JSON-RPC; startup and shutdown diagnostics go to stderr.
 
 Restart the MCP client after changing tool-registration settings such as `ego.unrestricted`.
 
