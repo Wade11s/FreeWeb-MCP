@@ -9,11 +9,17 @@ import type { CliContext } from "./main.js";
  * handler owns runtime creation, stdio serving, signal handling, and the
  * orderly shutdown deadline; process termination goes through the
  * entry-point-owned exit hook. Stdout stays reserved for JSON-RPC, so every
- * startup and shutdown diagnostic is written to the error stream.
+ * startup and shutdown diagnostic is written to the error stream. The
+ * version comes from the dispatcher's single package-metadata read and is
+ * supplied explicitly to server construction.
  */
-export async function runMcpCommand(config: AppConfig, ctx: Pick<CliContext, "err" | "exit">): Promise<void> {
+export async function runMcpCommand(
+  config: AppConfig,
+  ctx: Pick<CliContext, "err" | "exit">,
+  version: string,
+): Promise<void> {
   const runtime = await createFreeWebRuntime(config);
-  const handle = serveStdio(() => createMcpServer(runtime));
+  const handle = serveStdio(() => createMcpServer(runtime, version));
   ctx.err("FreeWeb-MCP listening on stdio\n");
   let closing = false;
   const close = async (signal: "SIGINT" | "SIGTERM") => {

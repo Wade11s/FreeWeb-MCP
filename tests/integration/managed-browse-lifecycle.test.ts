@@ -123,7 +123,7 @@ beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "freeweb-lifecycle-"));
   const parsed = configFileSchema.parse({ dataDir: root });
   runtime = new LifecycleRuntime({ ...parsed, dataDir: root });
-  server = createMcpServer(runtime);
+  server = createMcpServer(runtime, "1.0.0-lifecycle");
   client = new Client({ name: "freeweb-lifecycle-client", version: "1.0.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);

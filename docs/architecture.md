@@ -18,6 +18,8 @@ The executable entry point is the only code that reads argv, writes to the proce
 
 The `doctor` handler renders a grouped human report with required checks, optional capabilities, remediation, and next steps; complete redacted configuration is opt-in through `--show-config`. In `--json` mode it writes one `schemaVersion: 1` document to stdout while retaining `ok` and `checks` and adding stable status, summary, per-check remediation, and next-step fields. An unusable configuration becomes one failed required `configuration` check in either presentation; JSON stdout stays parseable and its human diagnostic goes to stderr. Doctor's Node.js check enforces the `engines.node` floor read from package.json, so the declared minimum has one source. A failed required check exits 1; optional warnings do not. Provider binaries are only spawned with `--version`, and TinyFish readiness is read from configuration, so doctor starts no business provider and makes no wallet or API request.
 
+The dispatcher loads package metadata once and supplies the same version to Commander and the `mcp` handler; the MCP server is constructed with that value so initialize matches the CLI and installed package metadata without a second handshake-version edit.
+
 ## Modules
 
 - **FreeWebRuntime** coordinates configuration, providers, URL checks and shutdown. Providers start lazily.

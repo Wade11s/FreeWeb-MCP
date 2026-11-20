@@ -18,9 +18,10 @@ function handle<I, O extends Record<string, unknown>>(operation: Handler<I, O>, 
     .catch((error) => toolFailure(error));
 }
 
-export function createMcpServer(runtime: FreeWebToolHandlers): McpServer {
+/** Creates the MCP server with the package version supplied by CLI startup. */
+export function createMcpServer(runtime: FreeWebToolHandlers, version: string): McpServer {
   const server = new McpServer(
-    { name: "freeweb-mcp", version: "0.1.0" },
+    { name: "freeweb-mcp", version },
     { maxToolInputElements: 10_000 },
   );
 
