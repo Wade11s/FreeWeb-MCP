@@ -307,6 +307,20 @@ describe.skipIf(!hasExpect)("built CLI interactive init behind a pseudo-terminal
     expect(raw.tinyfish.freeOnlyConfirmed).toBe(true);
   });
 
+  it("persists an environment-only attestation only after the explicit prompt", async () => {
+    await writeFakeFirecrawl();
+    const result = await runCliInPty(["y", "y", "y"], {
+      TINYFISH_API_KEY: "integration-env-only-attestation",
+      FREEWEB_TINYFISH_FREE_ONLY_CONFIRMED: "true",
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.output).toContain("Confirm the Free attestation:");
+    expect(result.output).toContain("TinyFish Search/Fetch: Configured");
+    const raw = JSON.parse(await readFile(configPath, "utf8")) as { tinyfish: { freeOnlyConfirmed?: boolean } };
+    expect(raw.tinyfish.freeOnlyConfirmed).toBe(true);
+  });
+
   it("uses the same whitespace-only key presence as doctor and runtime", async () => {
     await writeFakeFirecrawl();
     const result = await runCliInPty(["y", "y", "y"], { TINYFISH_API_KEY: "   " });

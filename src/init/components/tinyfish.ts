@@ -38,7 +38,7 @@ export function redactTinyFishInitIo(io: InitIo, env: NodeJS.ProcessEnv): InitIo
 interface TinyFishDetection extends InitDetection {
   /** Presence only: the credential value is never copied into detection state. */
   readonly tinyfishKeyPresent: boolean;
-  /** The effective file/environment attestation, never the API key itself. */
+  /** The persisted file attestation, never an environment-only assertion. */
   readonly tinyfishAttested: boolean;
 }
 
@@ -56,7 +56,7 @@ export function createTinyFishComponent(): InitComponent {
     installed: true,
     certified: true,
     tinyfishKeyPresent: Boolean(env.TINYFISH_API_KEY),
-    tinyfishAttested: effectiveAttestation(env, fileAttestation(classification)),
+    tinyfishAttested: fileAttestation(classification),
     notes: ["TinyFish uses the SDK already included with FreeWeb-MCP; no global CLI is needed"],
   });
 
@@ -81,6 +81,9 @@ export function createTinyFishComponent(): InitComponent {
     try {
       if (detection.tinyfishAttested) {
         if (!detection.tinyfishKeyPresent) return pending(base, `an explicit Free attestation is present, but TINYFISH_API_KEY is not set. ${MANUAL_ENVIRONMENT_STEP} ${NO_REQUESTS}`);
+        if (!effectiveAttestation(input.env, true)) {
+          return pending(base, "the persisted Free attestation is present, but FREEWEB_TINYFISH_FREE_ONLY_CONFIRMED=false still overrides it; remove that override after verifying the attestation, then rerun init");
+        }
         return configured(base);
       }
 

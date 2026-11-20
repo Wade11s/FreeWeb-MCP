@@ -127,6 +127,33 @@ describe("TinyFish Initialization", () => {
     expect(io.questions).toEqual([]);
   });
 
+  it("requires and persists explicit confirmation for an environment-only attestation", async () => {
+    const { detection, result, io } = await executeTinyFish(
+      { TINYFISH_API_KEY: "unit-env-only-attestation", FREEWEB_TINYFISH_FREE_ONLY_CONFIRMED: "true" },
+      { status: "absent" },
+      [true, true],
+    );
+
+    expect(detection).toMatchObject({ tinyfishAttested: false });
+    expect(io.questions).toHaveLength(2);
+    expect(io.questions[1]).toContain(TINYFISH_FREE_ATTESTATION);
+    expect(result.outcome).toBe("Configured");
+    expect(result.configPatches).toEqual([{ setting: "tinyfish.freeOnlyConfirmed", value: true }]);
+  });
+
+  it("keeps the environment false override blocking a persisted attestation", async () => {
+    const { result, io } = await executeTinyFish(
+      { TINYFISH_API_KEY: "unit-env-false-override", FREEWEB_TINYFISH_FREE_ONLY_CONFIRMED: "false" },
+      { status: "ok", raw: { tinyfish: { freeOnlyConfirmed: true } } },
+      [],
+    );
+
+    expect(result.outcome).toBe("Pending");
+    expect(result.detail).toContain("FREEWEB_TINYFISH_FREE_ONLY_CONFIRMED=false still overrides it");
+    expect(result.configPatches).toBeUndefined();
+    expect(io.questions).toEqual([]);
+  });
+
   it("keeps an existing attestation Pending until the manual environment step is completed", async () => {
     const { result, io } = await executeTinyFish(
       {},
