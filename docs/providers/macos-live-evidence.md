@@ -2,6 +2,8 @@
 
 > **Status: RUN on 2026-11-20 (macOS, this machine).** The orchestrator performed the opt-in run described in [macos-live-run.md](macos-live-run.md) against the packed tarball, with `TINYFISH_API_KEY` deliberately removed from the child environment. The implementation agent performed none of it. Every value below is an observed value, not an expected one.
 
+> **Naming note:** this evidence predates the scoped npm release. The run used the pre-release package name `freeweb-mcp@0.1.0` and the temporary executable `freeweb-mcp`; the published package is `@wade11s/freeweb-mcp` with the `freeweb-mcp` executable. Historical observations below are left verbatim.
+
 ## Safety review
 
 - Evidence contains no credential value, API key, token, cookie, password, session, browser Profile, or personal browsing data: **yes**

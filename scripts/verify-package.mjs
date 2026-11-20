@@ -20,6 +20,10 @@ import { fileURLToPath } from "node:url";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 const pathSeparator = process.platform === "win32" ? ";" : ":";
+const packageName = "@wade11s/freeweb-mcp";
+const packageScope = "@wade11s";
+const packageLeaf = "freeweb-mcp";
+const binName = "freeweb-mcp";
 
 /** Runs a command, returning its captured output and status. */
 function run(command, args, options = {}) {
@@ -98,7 +102,7 @@ function tarballEntries(tarball, reported) {
 
 /** Runs the installed executable through its PATH name, as an MCP client would. */
 function runInstalled(args, env) {
-  return run(["freeweb-mcp", ...args].join(" "), [], { env, shell: true });
+  return run([binName, ...args].join(" "), [], { env, shell: true });
 }
 
 /** Runs the installed executable and asserts its exit status. */
@@ -106,7 +110,7 @@ function expectInstalled(args, expected, env) {
   const result = runInstalled(args, env);
   check(
     result.status === expected,
-    `expected \`freeweb-mcp ${args.join(" ")}\` to exit ${expected}, got ${result.status}\nstdout: ${result.stdout}\nstderr: ${result.stderr}`,
+    `expected \`${binName} ${args.join(" ")}\` to exit ${expected}, got ${result.status}\nstdout: ${result.stdout}\nstderr: ${result.stderr}`,
   );
   return result;
 }
@@ -150,13 +154,13 @@ async function main() {
       `offline install failed:\n${installed.stderr}\n(populate the local npm cache with \`npm install\` first; this verification never uses the network)`,
     );
 
-    const packageDir = join(installDir, "node_modules", "freeweb-mcp");
+    const packageDir = join(installDir, "node_modules", packageScope, packageLeaf);
     const packageFile = JSON.parse(await readFile(join(packageDir, "package.json"), "utf8"));
     for (const field of ["main", "module", "types", "typings", "exports", "imports"]) {
       check(packageFile[field] === undefined, `the installed package still declares the library entry metadata \`${field}\``);
     }
     check(
-      JSON.stringify(packageFile.bin) === JSON.stringify({ "freeweb-mcp": "./dist/cli.js" }),
+      JSON.stringify(packageFile.bin) === JSON.stringify({ [binName]: "dist/cli.js" }),
       `the executable is not the sole package entry point: ${JSON.stringify(packageFile.bin)}`,
     );
 
@@ -168,7 +172,7 @@ async function main() {
 
     // 4. The executable is installed, linked, and runs the final command surface.
     const binDir = join(installDir, "node_modules", ".bin");
-    const binPath = join(binDir, process.platform === "win32" ? "freeweb-mcp.cmd" : "freeweb-mcp");
+    const binPath = join(binDir, process.platform === "win32" ? `${binName}.cmd` : binName);
     await stat(binPath);
     if (process.platform !== "win32") {
       const link = await readlink(binPath);
@@ -202,28 +206,28 @@ async function main() {
       const version = expectInstalled([flag], 0, env);
       check(
         version.stdout.trim() === packageFile.version,
-        `\`freeweb-mcp ${flag}\` printed ${JSON.stringify(version.stdout)}, expected ${packageFile.version}`,
+        `\`${binName} ${flag}\` printed ${JSON.stringify(version.stdout)}, expected ${packageFile.version}`,
       );
     }
 
     const noArgs = expectInstalled([], 0, env);
-    check(noArgs.stdout.includes("Usage: freeweb-mcp"), "no-argument invocation did not print help");
+    check(noArgs.stdout.includes(`Usage: ${binName}`), "no-argument invocation did not print help");
     for (const command of ["doctor", "init", "mcp", "print-config"]) {
       check(noArgs.stdout.includes(command), `the help output is missing the ${command} command`);
     }
 
     for (const [args, usage] of [
-      [["help"], "Usage: freeweb-mcp"],
-      [["--help"], "Usage: freeweb-mcp"],
-      [["help", "mcp"], "Usage: freeweb-mcp mcp"],
-      [["mcp", "--help"], "Usage: freeweb-mcp mcp"],
+      [["help"], `Usage: ${binName}`],
+      [["--help"], `Usage: ${binName}`],
+      [["help", "mcp"], `Usage: ${binName} mcp`],
+      [["mcp", "--help"], `Usage: ${binName} mcp`],
     ]) {
       const help = expectInstalled(args, 0, env);
-      check(help.stdout.includes(usage), `\`freeweb-mcp ${args.join(" ")}\` did not print ${JSON.stringify(usage)}`);
+      check(help.stdout.includes(usage), `\`${binName} ${args.join(" ")}\` did not print ${JSON.stringify(usage)}`);
     }
 
     const printConfig = expectInstalled(["print-config"], 0, env);
-    const expectedConfig = { mcpServers: { freeweb: { command: "freeweb-mcp", args: ["mcp"] } } };
+    const expectedConfig = { mcpServers: { freeweb: { command: binName, args: ["mcp"] } } };
     check(
       printConfig.stdout === `${JSON.stringify(expectedConfig, null, 2)}\n`,
       `print-config emitted unexpected configuration:\n${printConfig.stdout}`,
@@ -278,7 +282,7 @@ async function main() {
       [
         "--input-type=module",
         "-e",
-        "await import('freeweb-mcp').then(() => { console.log('RESOLVED'); }, (error) => { console.log(`FAILED ${error.code}: ${error.message}`); process.exitCode = 3; });",
+        `await import('${packageName}').then(() => { console.log('RESOLVED'); }, (error) => { console.log(\`FAILED \${error.code}: \${error.message}\`); process.exitCode = 3; });`,
       ],
       { cwd: consumerDir, env: consumerEnv },
     );
@@ -295,14 +299,14 @@ async function main() {
       process.execPath,
       [
         "-e",
-        "try { require.resolve('freeweb-mcp'); console.log('RESOLVED'); } catch (error) { console.log(`FAILED ${error.code}`); process.exitCode = 3; }",
+        `try { require.resolve('${packageName}'); console.log('RESOLVED'); } catch (error) { console.log(\`FAILED \${error.code}\`); process.exitCode = 3; }`,
       ],
       { cwd: consumerDir, env: consumerEnv },
     );
     check(cjsRequire.status === 3, `require.resolve still finds a package entry:\n${cjsRequire.stdout}${cjsRequire.stderr}`);
 
-    console.log(`library import of "freeweb-mcp": ${esmImport.stdout.trim()}`);
-    console.log(`require.resolve("freeweb-mcp"): ${cjsRequire.stdout.trim()}`);
+    console.log(`library import of "${packageName}": ${esmImport.stdout.trim()}`);
+    console.log(`require.resolve("${packageName}"): ${cjsRequire.stdout.trim()}`);
     console.log("verify:pack passed: packed tarball, offline install, CLI surface, and absent library entry all verified");
   } finally {
     await rm(packDir, { recursive: true, force: true });

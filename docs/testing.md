@@ -55,7 +55,7 @@ The ego tests used local fixtures and uniquely named temporary Spaces, with no l
 
 `npm run verify:pack` (`scripts/verify-package.mjs`) verifies the published artifact end to end and is offline by construction. It builds the package, runs `npm pack`, lists the tarball with `tar`, installs that tarball into a temporary prefix outside the repository with `npm install --offline` (dependencies resolve from the local npm cache that `npm install` populates; a cold cache fails loudly instead of reaching the network), and then drives the installed executable through no-argument help, `help`, `--help`, `help mcp`, `mcp --help`, `--version`, `-v`, `print-config`, `doctor`, `doctor --json`, and an unknown command with its stderr diagnostic and exit status. It asserts that the installed `node_modules/.bin` link resolves to the packed `dist/cli.js`, that the file keeps its shebang and executable mode, and that `doctor` still replaces the TinyFish key with `[redacted]`.
 
-The same run verifies the CLI-only surface. The installed `package.json` declares no `main`, `module`, `types`, `typings`, `exports`, or `imports`, and its only entry is the `freeweb-mcp` bin. A consumer project beside the install fails `await import("freeweb-mcp")` with `ERR_MODULE_NOT_FOUND: Cannot find package '.../node_modules/freeweb-mcp/index.js'` and fails `require.resolve("freeweb-mcp")` with `MODULE_NOT_FOUND`, so neither module system reaches a library entry.
+The same run verifies the CLI-only surface. The installed `package.json` declares no `main`, `module`, `types`, `typings`, `exports`, or `imports`, and its only entry is the `freeweb-mcp` bin. A consumer project beside the install fails `await import("@wade11s/freeweb-mcp")` with `ERR_MODULE_NOT_FOUND: Cannot find package '.../node_modules/@wade11s/freeweb-mcp/index.js'` and fails `require.resolve("@wade11s/freeweb-mcp")` with `MODULE_NOT_FOUND`, so neither module system reaches a library entry.
 
 The tarball contents are asserted against the intended set (executable and runtime modules, README, license, glossary, configuration example, and the architecture, security, testing, provider, and ADR documents) and against shipping source, tests, build or editor configuration, `AGENTS.md`, `node_modules`, or a nested tarball. `npm run check` stays independent of the npm cache, so packaging verification is a separate local command.
 
@@ -63,7 +63,7 @@ To reproduce the install step by hand:
 
 ```bash
 npm pack --pack-destination /tmp
-npm install --prefix /tmp/freeweb-prefix --offline --no-audit --no-fund /tmp/freeweb-mcp-0.1.0.tgz
+npm install --prefix /tmp/freeweb-prefix --offline --no-audit --no-fund /tmp/wade11s-freeweb-mcp-0.1.0.tgz
 PATH="/tmp/freeweb-prefix/node_modules/.bin:$PATH" freeweb-mcp --version
-cd /tmp/freeweb-prefix && node -e "import('freeweb-mcp').then(() => console.log('RESOLVED'), (error) => console.log('FAILED', error.code))"
+cd /tmp/freeweb-prefix && node -e "import('@wade11s/freeweb-mcp').then(() => console.log('RESOLVED'), (error) => console.log('FAILED', error.code))"
 ```

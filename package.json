@@ -1,14 +1,35 @@
 {
-  "name": "freeweb-mcp",
+  "name": "@wade11s/freeweb-mcp",
   "version": "0.1.0",
   "description": "Free-first local Web MCP using Firecrawl Local, TinyFish and ego-lite",
   "type": "module",
   "license": "MIT",
+  "author": "Wade11s",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Wade11s/FreeWeb-MCP.git"
+  },
+  "homepage": "https://github.com/Wade11s/FreeWeb-MCP#readme",
+  "bugs": {
+    "url": "https://github.com/Wade11s/FreeWeb-MCP/issues"
+  },
+  "keywords": [
+    "mcp",
+    "web",
+    "firecrawl",
+    "firecrawl-local",
+    "tinyfish",
+    "ego-lite",
+    "web-scraping"
+  ],
   "engines": {
     "node": ">=22.12.0"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
-    "freeweb-mcp": "./dist/cli.js"
+    "freeweb-mcp": "dist/cli.js"
   },
   "files": [
     "dist",
@@ -26,6 +47,7 @@
   "scripts": {
     "clean": "node scripts/clean.mjs",
     "build": "node scripts/clean.mjs && tsc -p tsconfig.json",
+    "prepublishOnly": "npm run build",
     "dev": "tsx src/cli.ts mcp",
     "start": "node dist/cli.js mcp",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",

@@ -37,11 +37,11 @@ TinyFish uses the bundled SDK on every platform and remains optional; no live ac
 
 ## Install
 
-FreeWeb-MCP ships as a CLI-only package. The only public entry point is the `freeweb-mcp` executable declared by `bin` in `package.json`: the package declares no `main`, `types`, or `exports` metadata and has no public barrel modules, so importing the package name fails by design. Every internal TypeScript module is private to the CLI.
+FreeWeb-MCP ships as a CLI-only package published as `@wade11s/freeweb-mcp`. The only public entry point is the `freeweb-mcp` executable declared by `bin` in `package.json`: the package declares no `main`, `types`, or `exports` metadata and has no public barrel modules, so importing the package name fails by design. Every internal TypeScript module is private to the CLI.
 
 ```bash
-npm install --global freeweb-mcp                                # published release
-npm install --prefix /opt/freeweb-mcp ./freeweb-mcp-0.1.0.tgz   # local tarball from `npm pack`
+npm install --global @wade11s/freeweb-mcp                              # published release
+npm install --prefix /opt/freeweb-mcp ./wade11s-freeweb-mcp-0.1.0.tgz  # local tarball from `npm pack`
 
 freeweb-mcp --version
 freeweb-mcp doctor
