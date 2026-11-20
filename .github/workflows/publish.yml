@@ -1,4 +1,4 @@
-name: Publish to npm
+name: Stage npm release
 
 on:
   push:
@@ -24,7 +24,7 @@ jobs:
       - name: Setup Node.js and npm registry
         uses: actions/setup-node@v4
         with:
-          node-version: 22.12.0
+          node-version: 22.14.0
           cache: npm
           registry-url: https://registry.npmjs.org
           scope: '@wade11s'
@@ -54,7 +54,9 @@ jobs:
       - name: Verify packed artifact
         run: npm run verify:pack
 
-      - name: Publish to npm
-        run: npm publish --provenance
+      - name: Stage package for maintainer approval
+        # Stage-only tokens cannot publish directly. A maintainer must review
+        # and approve this staged version with 2FA before it becomes live.
+        run: npx --yes npm@11.15.0 stage publish --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

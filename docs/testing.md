@@ -57,6 +57,8 @@ The ego tests used local fixtures and uniquely named temporary Spaces, with no l
 
 The release workflow runs `npm ci` and then `npm install --package-lock=false --ignore-scripts --no-audit --no-fund` before this verification. The second command populates registry metadata that `npm ci` alone may omit; the tarball installation itself remains offline.
 
+The release workflow uses Node.js 22.14 and npm CLI 11.15 to run `npm stage publish --provenance` after all checks. The stage-only token cannot publish directly; a maintainer must review and approve the staged version with 2FA before it becomes publicly available.
+
 The same run verifies the CLI-only surface. The installed `package.json` declares no `main`, `module`, `types`, `typings`, `exports`, or `imports`, and its only entry is the `freeweb-mcp` bin. A consumer project beside the install fails `await import("@wade11s/freeweb-mcp")` with `ERR_MODULE_NOT_FOUND: Cannot find package '.../node_modules/@wade11s/freeweb-mcp/index.js'` and fails `require.resolve("@wade11s/freeweb-mcp")` with `MODULE_NOT_FOUND`, so neither module system reaches a library entry.
 
 The tarball contents are asserted against the intended set (executable and runtime modules, README, license, glossary, configuration example, and the architecture, security, testing, provider, and ADR documents) and against shipping source, tests, build or editor configuration, `AGENTS.md`, `node_modules`, or a nested tarball. `npm run check` stays independent of the npm cache, so packaging verification is a separate local command.
