@@ -24,6 +24,21 @@ Automatic Firecrawl installation additionally needs Rust, Cargo, and a C compile
 
 Firecrawl installation follows the [official Local quickstart](https://docs.firecrawl.dev/quickstarts/firecrawl-local). On macOS and Debian/Ubuntu, `init` can install the certified 0.1.0 release when those prerequisites exist. Windows and other platforms receive detection and manual guidance only. Providers are installed separately and are not redistributed by this package.
 
+## Install
+
+FreeWeb-MCP ships as a CLI-only package. The only public entry point is the `freeweb-mcp` executable declared by `bin` in `package.json`: the package declares no `main`, `types`, or `exports` metadata and has no public barrel modules, so importing the package name fails by design. Every internal TypeScript module is private to the CLI.
+
+```bash
+npm install --global freeweb-mcp                                # published release
+npm install --prefix /opt/freeweb-mcp ./freeweb-mcp-0.1.0.tgz   # local tarball from `npm pack`
+
+freeweb-mcp --version
+freeweb-mcp doctor
+freeweb-mcp print-config
+```
+
+Release verification for the packed artifact is described in [docs/testing.md](docs/testing.md#packaging).
+
 ## Command line
 
 The package exposes one executable, `freeweb-mcp` (`dist/cli.js` in a checkout):
@@ -95,6 +110,7 @@ Unknown options and extra positional arguments are usage errors: exit code 1, di
 npm install
 npm run build
 node dist/cli.js doctor
+node dist/cli.js print-config
 node dist/cli.js mcp   # same as npm start
 ```
 
@@ -314,9 +330,10 @@ npm run test:unit
 npm run test:integration
 npm run test:live
 npm run check
+npm run verify:pack
 ```
 
-Unit and in-memory MCP tests do not require provider credentials. Live tests are separated from mock tests and should use a dedicated ego test Profile/Space. TinyFish live tests are opt-in and must never be pointed at a wallet-enabled account.
+Unit and in-memory MCP tests do not require provider credentials. Live tests are separated from mock tests and should use a dedicated ego test Profile/Space. TinyFish live tests are opt-in and must never be pointed at a wallet-enabled account. `npm run verify:pack` packs the real tarball, installs it into a temporary prefix offline, drives the installed executable, and proves that the removed library entry no longer resolves; it never touches the network.
 
 See the [verification report](docs/testing.md) and [code review record](docs/review.md) for exact test counts, live environment limitations, and the final delegate-review result.
 
