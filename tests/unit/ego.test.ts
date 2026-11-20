@@ -140,10 +140,24 @@ class LabelLifecycleRunner implements EgoRunner {
     }
 
     const candidates = this.tabs.filter((tab) => tab.label === null && tab.openedBy === "agent");
+    const saved = [...new Set(keptPages)];
+    if (
+      script.includes("legacy Page label mapping is ambiguous") &&
+      !/const TASK_ID = null;/.test(script) &&
+      pageOrder.length === 0 &&
+      (candidates.length !== 1 || saved.length !== 1)
+    ) {
+      return this.errorResult(request, "EGO_PAGE_NOT_FOUND", "legacy Page label mapping is ambiguous", {
+        requestedPage: pageLabel,
+        availablePages: keptPages,
+        reason: "legacy-page-mapping-ambiguous",
+        recovery: "close and reopen the managed Task Space",
+      });
+    }
     if (candidates.length > 0) {
-      const labels = pageOrder.length ? pageOrder : keptPages;
-      candidates.forEach((tab, index) => {
-        tab.label = labels[index] ?? `p${index + 1}`;
+      const labels = [...new Set(pageOrder.length ? pageOrder : keptPages)];
+      candidates.slice(0, labels.length).forEach((tab, index) => {
+        tab.label = labels[index]!;
         this.adoptedAs.push(tab.label);
       });
     }
@@ -1590,7 +1604,7 @@ describe("EgoProvider Page label resolution", () => {
     expect(runner.lastWorkLabels).toEqual(["p2"]);
   });
 
-  it("uses registry labels in tab order for a legacy multi-Page row", async () => {
+  it("does not zip preferred keep order onto an unlabeled legacy multi-Page row", async () => {
     const config = await makeConfig(dataDir);
     const runner = new LabelLifecycleRunner();
     const provider = new EgoProvider(config, { runner });
@@ -1598,13 +1612,69 @@ describe("EgoProvider Page label resolution", () => {
       { label: "p1", url: "https://page.test/p1", title: "Page 1" },
       { label: "p2", url: "https://page.test/p2", title: "Page 2" },
     ]);
-    await removePageOrder(dataDir, browseId);
 
     runner.workPages = ["p2", "p1"];
     runner.workValue = { popup: { label: "p1" } };
-    const worked = await provider.browse({ action: "call", browseId, page: "p2", method: "page.snapshot", args: [] });
-    expect(worked).toMatchObject({ status: "ok", pages: ["p2", "p1"] });
-    expect(runner.lastWorkLabels).toEqual(["p1", "p2"]);
+    await provider.browse({ action: "call", browseId, page: "p2", method: "page.snapshot", args: [] });
+    // finish() has now unlabeled both surviving tabs in tab order [p1, p2].
+    await removePageOrder(dataDir, browseId);
+    const adoptedBefore = runner.adoptedAs.length;
+    const callsBefore = runner.calls.length;
+
+    await expect(provider.browse({
+      action: "call",
+      browseId,
+      page: "p2",
+      method: "page.snapshot",
+      args: [],
+    })).rejects.toMatchObject({
+      code: "EGO_PAGE_NOT_FOUND",
+      options: {
+        details: {
+          error: {
+            details: {
+              reason: "legacy-page-mapping-ambiguous",
+              recovery: "close and reopen the managed Task Space",
+            },
+          },
+        },
+      },
+    });
+    expect(runner.adoptedAs).toHaveLength(adoptedBefore);
+    expect(runner.calls.length).toBe(callsBefore + 1);
+    expect(runner.pageOrder()).toEqual([]);
+  });
+
+  it("does not invent labels when a legacy saved list is shorter than surviving tabs", async () => {
+    const config = await makeConfig(dataDir);
+    const runner = new LabelLifecycleRunner();
+    const provider = new EgoProvider(config, { runner });
+    const browseId = await openWithTabs(dataDir, provider, runner, [
+      { label: "p1", url: "https://page.test/p1", title: "Page 1" },
+      { label: "p2", url: "https://page.test/p2", title: "Page 2" },
+    ]);
+
+    runner.workPages = ["p2", "p1"];
+    runner.workValue = { popup: { label: "p1" } };
+    await provider.browse({ action: "call", browseId, page: "p2", method: "page.snapshot", args: [] });
+    const registryPath = join(dataDir, "browse", "tasks.json");
+    const registry = JSON.parse(await readFile(registryPath, "utf8")) as {
+      tasks: Record<string, { pages: string[]; pageOrder?: string[] }>;
+    };
+    registry.tasks[browseId]!.pages = ["p2"];
+    delete registry.tasks[browseId]!.pageOrder;
+    await writeFile(registryPath, JSON.stringify(registry));
+    const adoptedBefore = runner.adoptedAs.length;
+
+    await expect(provider.browse({
+      action: "call",
+      browseId,
+      page: "p2",
+      method: "page.snapshot",
+      args: [],
+    })).rejects.toMatchObject({ code: "EGO_PAGE_NOT_FOUND" });
+    expect(runner.adoptedAs).toHaveLength(adoptedBefore);
+    expect(runner.pageOrder()).toEqual([]);
   });
 
   it("still rejects a genuinely missing label after a kept non-p1 round", async () => {
