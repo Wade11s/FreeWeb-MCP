@@ -18,6 +18,7 @@ export type InitPathRepair = InitConfigRepair;
 
 export interface InitPlanContext {
   readonly configPath: string;
+  readonly dataDir: string;
   readonly classification: ConfigClassification;
   /** Read-only detections keyed by component id. */
   readonly detections: ReadonlyMap<InitComponentId, InitDetection>;
@@ -38,12 +39,21 @@ export interface InitPlan {
  * data shaping: detection already happened, and nothing here has side effects.
  */
 export function buildInitPlan(context: InitPlanContext): InitPlan {
-  const { configPath, classification, detections, componentItems } = context;
+  const { configPath, dataDir, classification, detections, componentItems } = context;
   const detected = [...detections.values()];
   const warnings: InitWarning[] = detected.flatMap((detection) => detection.warnings ?? []);
   const repairs: InitConfigRepair[] = detected.flatMap((detection) => detection.repairs ?? []);
   const detectionPatches = detected.flatMap((detection) => detection.configPatches ?? []);
   const items: InitPlanItem[] = [...componentItems];
+  const includeDoctor = (): void => {
+    items.push({
+      component: "configuration",
+      action: "configure",
+      description: `run local doctor checks; create the data directory at ${dataDir} with mode 0700 if it is absent`,
+      required: true,
+      selected: true,
+    });
+  };
 
   if (classification.status === "malformed" || classification.status === "schema-invalid") {
     const reason = classification.status === "malformed"
@@ -56,6 +66,7 @@ export function buildInitPlan(context: InitPlanContext): InitPlan {
       required: true,
       selected: true,
     });
+    includeDoctor();
     return { items, warnings, repairs: [], recovery: { reason } };
   }
 
@@ -67,6 +78,7 @@ export function buildInitPlan(context: InitPlanContext): InitPlan {
       required: true,
       selected: true,
     });
+    includeDoctor();
     return { items, warnings, repairs: [], recovery: null };
   }
 
@@ -91,5 +103,6 @@ export function buildInitPlan(context: InitPlanContext): InitPlan {
       selected: true,
     });
   }
+  includeDoctor();
   return { items, warnings, repairs, recovery: null };
 }

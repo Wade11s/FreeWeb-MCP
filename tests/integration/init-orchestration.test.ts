@@ -208,6 +208,8 @@ describe("init with an existing certified installation", () => {
     expect(fake.out()).toContain("verify the existing installation with an owned loopback health check (Cloud Off)");
     expect(fake.out()).toContain("Firecrawl Local: Installed");
     expect(fake.out()).toContain("Configuration: Configured");
+    expect(fake.out()).toContain(`create the data directory at ${dataDir} with mode 0700 if it is absent`);
+    expect(existsSync(dataDir)).toBe(true);
 
     // Doctor ran without starting the MCP server
     expect(fake.out()).toContain("Running local doctor checks");

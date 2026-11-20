@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { defaultConfigPath, loadConfig, type AppConfig } from "../config.js";
 import { runDoctor, type DoctorCheck } from "../doctor.js";
 import { registeredInitComponents } from "./components/registry.js";
@@ -69,7 +71,13 @@ export async function runInit(io: InitIo, deps: InitDeps): Promise<number> {
   for (const component of deps.components) {
     componentItems.push(...component.plan(detections.get(component.id)!));
   }
-  const plan = buildInitPlan({ configPath: deps.configPath, classification, detections, componentItems });
+  const plan = buildInitPlan({
+    configPath: deps.configPath,
+    dataDir: plannedDataDir(deps.env, classification),
+    classification,
+    detections,
+    componentItems,
+  });
 
   let rebuild = false;
   if (plan.recovery) {
@@ -258,6 +266,12 @@ async function writeConfigurationStep(
 
 function displayConfigValue(value: InitConfigValue): string {
   return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+function plannedDataDir(env: NodeJS.ProcessEnv, classification: ConfigClassification): string {
+  if (env.FREEWEB_DATA_DIR) return env.FREEWEB_DATA_DIR;
+  if (classification.status === "ok" && typeof classification.raw.dataDir === "string") return classification.raw.dataDir;
+  return join(homedir(), ".freeweb-mcp");
 }
 
 function effectiveTimeouts(classification: ConfigClassification): InitTimeouts | undefined {
