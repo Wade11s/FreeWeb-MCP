@@ -63,12 +63,6 @@ export function createFirecrawlComponent(deps: FirecrawlComponentDeps = {}): Ini
   const runner = deps.commandRunner ?? nodeCommandRunner;
   const start = deps.startRuntime ?? startFirecrawlRuntime;
   const platform = deps.platform ?? process.platform;
-  let detectedPlatform: FirecrawlPlatform = platform === "darwin"
-    ? "macos"
-    : platform === "win32"
-      ? "windows"
-      : "unsupported";
-  let chromeNote = OPTIONAL_CHROME_UNCHECKED;
 
   const resolvePlatform = async (): Promise<FirecrawlPlatform> => {
     if (platform === "darwin") return "macos";
@@ -79,8 +73,17 @@ export function createFirecrawlComponent(deps: FirecrawlComponentDeps = {}): Ini
   };
 
   const detect = async (env: NodeJS.ProcessEnv, classification: ConfigClassification): Promise<InitDetection> => {
-    detectedPlatform = await resolvePlatform();
-    chromeNote = await detectChrome(env, fs, detectedPlatform);
+    // A rejecting injected os-release reader must not escape detection: the
+    // run stays read-only and falls back to manual guidance.
+    let detectedPlatform: FirecrawlPlatform;
+    let platformNote: string | undefined;
+    try {
+      detectedPlatform = await resolvePlatform();
+    } catch (error) {
+      detectedPlatform = "unsupported";
+      platformNote = `the host platform could not be determined: ${error instanceof Error ? error.message : String(error)}`;
+    }
+    const chromeNote = await detectChrome(env, fs, detectedPlatform);
     const envBinary = typeof env.FIRECRAWL_LOCAL_BIN === "string" && env.FIRECRAWL_LOCAL_BIN
       ? env.FIRECRAWL_LOCAL_BIN
       : undefined;
@@ -90,6 +93,10 @@ export function createFirecrawlComponent(deps: FirecrawlComponentDeps = {}): Ini
     // and files with no explicit binary get a patch; an explicit stale path
     // gets an individually confirmed old → new repair instead.
     const contribute = (detection: InitDetection): InitDetection => {
+      const notes = [
+        ...(detection.notes ?? []),
+        ...(platformNote ? [platformNote] : []),
+      ];
       const configPatches = detection.installed && detection.binary && (classification.status !== "ok" || !configured)
         ? [{ setting: "firecrawl.binary", value: detection.binary }]
         : [];
@@ -103,6 +110,9 @@ export function createFirecrawlComponent(deps: FirecrawlComponentDeps = {}): Ini
         : [];
       return {
         ...detection,
+        platform: detectedPlatform,
+        chromeNote,
+        ...(notes.length > 0 ? { notes } : {}),
         ...(configPatches.length > 0 ? { configPatches } : {}),
         ...(repairs.length > 0 ? { repairs } : {}),
       };
@@ -141,6 +151,7 @@ export function createFirecrawlComponent(deps: FirecrawlComponentDeps = {}): Ini
   };
 
   const plan = (detection: InitDetection): readonly InitPlanItem[] => {
+    const currentPlatform = detectionPlatform(detection);
     if (detection.installed) {
       return [{
         component: "firecrawl" as const,
@@ -150,7 +161,7 @@ export function createFirecrawlComponent(deps: FirecrawlComponentDeps = {}): Ini
         selected: true,
       }];
     }
-    if (isAutomaticPlatform(detectedPlatform)) {
+    if (isAutomaticPlatform(currentPlatform)) {
       return [{
         component: "firecrawl" as const,
         action: "install" as const,
@@ -162,7 +173,7 @@ export function createFirecrawlComponent(deps: FirecrawlComponentDeps = {}): Ini
     return [{
       component: "firecrawl" as const,
       action: "handoff" as const,
-      description: `Firecrawl Local is not installed; automatic installation is not offered on ${platformLabel(detectedPlatform)}; report official manual installation guidance (${LOCAL_QUICKSTART}); Chrome/Chromium is optional`,
+      description: `Firecrawl Local is not installed; automatic installation is not offered on ${platformLabel(currentPlatform)}; report official manual installation guidance (${LOCAL_QUICKSTART}); Chrome/Chromium is optional`,
       required: true,
       selected: true,
     }];
@@ -215,6 +226,7 @@ export function createFirecrawlComponent(deps: FirecrawlComponentDeps = {}): Ini
   const execute = async (input: InitExecuteInput): Promise<InitComponentResult> => {
     const base = { component: "firecrawl" as const, label: "Firecrawl Local", required: true, selected: true };
     const detection = input.detection;
+    const chromeNote = detectionChromeNote(detection);
     if (!detection.installed) {
       return await installMissing(input, base);
     }
@@ -264,7 +276,8 @@ export function createFirecrawlComponent(deps: FirecrawlComponentDeps = {}): Ini
   ): Promise<InitComponentResult> => {
     const detection = input.detection;
     const notes = detection.notes && detection.notes.length > 0 ? ` ${detection.notes.join("; ")}.` : "";
-    const currentPlatform = await resolvePlatform();
+    const currentPlatform = detectionPlatform(detection);
+    const chromeNote = detectionChromeNote(detection);
     if (!isAutomaticPlatform(currentPlatform)) {
       return {
         ...base,
@@ -350,20 +363,27 @@ export function createFirecrawlComponent(deps: FirecrawlComponentDeps = {}): Ini
     currentPlatform: FirecrawlPlatform,
   ): Promise<readonly { readonly name: string; readonly guidance: string }[]> => {
     const commandEnv = commandEnvironment(env);
-    const checks: ReadonlyArray<{ readonly name: string; readonly command: string; readonly guidance: string }> = [
-      { name: "Rust (rustc)", command: "rustc", guidance: RUST_GUIDANCE },
-      { name: "Cargo", command: "cargo", guidance: RUST_GUIDANCE },
-      { name: "a C compiler (cc)", command: "cc", guidance: cCompilerGuidance(currentPlatform) },
+    const checks: ReadonlyArray<{ readonly name: string; readonly commands: readonly string[]; readonly guidance: string }> = [
+      { name: "Rust (rustc)", commands: ["rustc"], guidance: RUST_GUIDANCE },
+      { name: "Cargo", commands: ["cargo"], guidance: RUST_GUIDANCE },
+      { name: "a C compiler (cc, gcc, or clang)", commands: ["cc", "gcc", "clang"], guidance: cCompilerGuidance(currentPlatform) },
     ];
     const missing: Array<{ readonly name: string; readonly guidance: string }> = [];
     for (const check of checks) {
-      const result = await runner({
-        command: check.command,
-        args: ["--version"],
-        env: commandEnv,
-        timeoutMs: PREREQUISITE_PROBE_TIMEOUT_MS,
-      }).catch(() => undefined);
-      if (!result || result.timedOut || result.exitCode !== 0) {
+      let available = false;
+      for (const command of check.commands) {
+        const result = await runner({
+          command,
+          args: ["--version"],
+          env: commandEnv,
+          timeoutMs: PREREQUISITE_PROBE_TIMEOUT_MS,
+        }).catch(() => undefined);
+        if (result && !result.timedOut && result.exitCode === 0) {
+          available = true;
+          break;
+        }
+      }
+      if (!available) {
         missing.push({ name: check.name, guidance: check.guidance });
       }
     }
@@ -386,6 +406,15 @@ function platformLabel(platform: FirecrawlPlatform): string {
   return "this platform";
 }
 
+function detectionPlatform(detection: InitDetection): FirecrawlPlatform {
+  const value = detection.platform;
+  return value === "macos" || value === "debian" || value === "windows" ? value : "unsupported";
+}
+
+function detectionChromeNote(detection: InitDetection): string {
+  return detection.chromeNote ?? OPTIONAL_CHROME_UNCHECKED;
+}
+
 function cCompilerGuidance(platform: FirecrawlPlatform): string {
   if (platform === "macos") return "install the Xcode command-line tools with `xcode-select --install`";
   if (platform === "debian") return "install build-essential on Debian/Ubuntu";
@@ -394,13 +423,16 @@ function cCompilerGuidance(platform: FirecrawlPlatform): string {
 
 /** Only explicit, non-secret command environment values are forwarded. */
 function commandEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const overrides: Record<string, string> = {};
-  for (const key of [
+  const forwarded = new Set([
     "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TMP", "TEMP",
     "CARGO_HOME", "CARGO_INSTALL_ROOT", "RUSTUP_HOME", "CC", "CXX",
-  ]) {
-    const value = env[key];
-    if (typeof value === "string" && value.length > 0) overrides[key] = value;
+    "RUSTFLAGS", "CARGO_TARGET_DIR", "CARGO_BUILD_JOBS", "CARGO_NET_OFFLINE",
+    "MACOSX_DEPLOYMENT_TARGET", "SDKROOT",
+  ]);
+  const overrides: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value !== "string" || value.length === 0) continue;
+    if (forwarded.has(key) || key.startsWith("CARGO_REGISTRIES_")) overrides[key] = value;
   }
   return childProcessEnv(overrides);
 }
@@ -417,10 +449,10 @@ async function defaultOsRelease(fs: Pick<InitFilesystem, "readFile">): Promise<s
 function isDebianFamily(release: string | undefined): boolean {
   if (!release) return false;
   const fields = new Map<string, string>();
-  for (const line of release.split("\n")) {
+  for (const line of release.split(/\r?\n/)) {
     const match = /^([A-Z_]+)=(.*)$/.exec(line.trim());
     if (!match) continue;
-    fields.set(match[1]!, match[2]!.replace(/^["']|["']$/g, ""));
+    fields.set(match[1]!, match[2]!.trim().replace(/^["']|["']$/g, ""));
   }
   const families = [fields.get("ID") ?? "", ...(fields.get("ID_LIKE") ?? "").split(/\s+/)];
   return families.some((family) => family === "debian" || family === "ubuntu");
