@@ -24,7 +24,7 @@ export function registerPrintConfig(program: Command, ctx: CliContext): void {
       ctx.out(text(JSON.stringify({
         mcpServers: {
           freeweb: {
-            command: process.execPath,
+            command: ctx.nodePath,
             args: [ctx.executablePath, "mcp"],
           },
         },

@@ -16,6 +16,7 @@ const exitCode = await runCli(process.argv.slice(2), {
   exit: (code) => {
     process.exit(code);
   },
+  nodePath: process.execPath,
   executablePath: resolve(process.argv[1] ?? "dist/cli.js"),
 });
 if (exitCode !== 0) process.exitCode = exitCode;
