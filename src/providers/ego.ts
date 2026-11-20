@@ -8,7 +8,7 @@ import { ArtifactStore } from "../artifacts/artifact-store.js";
 import { ArtifactOutput } from "../artifacts/output.js";
 import { configFileSchema, type AppConfig } from "../config.js";
 import { FreeWebError } from "../errors.js";
-import { assertPublicHttpUrl } from "../security/url.js";
+import { assertPublicHttpUrl, type TrustedLookupFn } from "../security/url.js";
 import {
   browseEvaluateInputSchema,
   browseInputSchema,
@@ -61,6 +61,7 @@ export interface EgoProviderOptions {
   now?: () => number;
   uuid?: () => string;
   lookupFn?: typeof lookup;
+  trustedLookupFn?: TrustedLookupFn;
   /** Test seam for bounded lock waits; production defaults to REGISTRY_LOCK_TIMEOUT_MS. */
   registryLockTimeoutMs?: number;
 }
@@ -639,6 +640,8 @@ export class EgoProvider {
   private readonly nowFn: () => number;
   private readonly uuidFn: () => string;
   private readonly lookupFn: typeof lookup;
+  private readonly trustedLookupFn?: TrustedLookupFn;
+  private readonly trustedDnsServers: readonly string[];
   /**
    * Registry critical sections are short: read-modify-write, never a runtime call. The
    * hand-off mutex lets shutdown time out instead of queueing behind a wedged operation.
@@ -666,6 +669,8 @@ export class EgoProvider {
     this.nowFn = resolved.now ?? Date.now;
     this.uuidFn = resolved.uuid ?? randomUUID;
     this.lookupFn = resolved.lookupFn ?? lookup;
+    this.trustedLookupFn = resolved.trustedLookupFn;
+    this.trustedDnsServers = config.network.trustedDnsServers;
     this.registryLockTimeoutMs = resolved.registryLockTimeoutMs ?? REGISTRY_LOCK_TIMEOUT_MS;
     if (!this.ego.allowedProfiles.includes(this.ego.defaultProfile)) {
       throw new FreeWebError("INVALID_CONFIG", "ego.defaultProfile must be in ego.allowedProfiles", { provider: PROVIDER });
@@ -908,6 +913,15 @@ export class EgoProvider {
     }
   }
 
+  private targetPolicy() {
+    return {
+      allowPrivate: this.ego.allowPrivate,
+      lookupFn: this.lookupFn,
+      trustedDnsServers: this.trustedDnsServers,
+      trustedLookupFn: this.trustedLookupFn,
+    };
+  }
+
   private validateProfile(profileId?: string): string {
     const selected = profileId ?? this.ego.defaultProfile;
     if (!this.ego.allowedProfiles.includes(selected)) {
@@ -922,7 +936,7 @@ export class EgoProvider {
       throw new FreeWebError("EGO_TASK_LIMIT", `at most ${this.ego.maxTasks} managed tasks are allowed`, { provider: PROVIDER });
     }
     const url = input.url
-      ? (await assertPublicHttpUrl(input.url, { allowPrivate: this.ego.allowPrivate, lookupFn: this.lookupFn })).toString()
+      ? (await assertPublicHttpUrl(input.url, this.targetPolicy())).toString()
       : undefined;
     const browseId = input.browseId ?? this.uuidFn();
     if (registry.tasks[browseId]) {
@@ -1090,7 +1104,7 @@ export class EgoProvider {
     const plan = prepareEgoCall(input.method ?? "", input.args ?? [], input.options);
     for (const ref of collectEgoPaths(plan)) await this.assertAllowedPath(ref);
     for (const url of collectEgoUrls(plan)) {
-      await assertPublicHttpUrl(url, { allowPrivate: this.ego.allowPrivate, lookupFn: this.lookupFn });
+      await assertPublicHttpUrl(url, this.targetPolicy());
     }
     // collectEgoUrls only sees absolute http(s) targets. Navigation-marked calls may also
     // carry relative targets, so re-check every navigation target for smuggled schemes.

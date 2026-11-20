@@ -11,12 +11,14 @@ import type { AppConfig } from "../../src/config.js";
 import {
   EgoProcessRunner,
   EgoProvider,
+  type EgoProviderOptions,
   type EgoRunRequest,
   type EgoRunResult,
   type EgoRunner,
   type EgoSpawnFn,
 } from "../../src/providers/ego.js";
 import { isSafeNavigationUrl, parseEgoUrl, prepareEgoCall } from "../../src/providers/ego-methods.js";
+import type { TrustedLookupFn } from "../../src/security/url.js";
 import { browseOutputSchema, type BrowseEvaluateInput, type BrowseInput } from "../../src/types.js";
 
 type EgoPayload = Record<string, unknown>;
@@ -1792,6 +1794,69 @@ describe("EgoProvider evaluate", () => {
     expect(failed.result).toMatchObject({ error: { message: "page blew up" } });
     expect(runner.calls).toHaveLength(1);
     expect(runner.calls[0].script).not.toContain("task.finish(");
+  });
+});
+
+describe("EgoProvider trusted DNS policy", () => {
+  it("opens and navigates a verified public Page with ego private access disabled", async () => {
+    const config = await makeConfig(dataDir, { allowPrivate: false });
+    config.network.trustedDnsServers = ["1.1.1.1", "2606:4700:4700::1111"];
+    const systemHosts: string[] = [];
+    const trustedCalls: Array<{ hostname: string; servers: readonly string[] }> = [];
+    const lookupFn = (async (hostname: string) => {
+      systemHosts.push(hostname);
+      return [
+        { address: "198.18.0.1", family: 4 },
+        { address: "198.19.255.255", family: 4 },
+      ];
+    }) as unknown as NonNullable<EgoProviderOptions["lookupFn"]>;
+    const trustedLookupFn: TrustedLookupFn = async (hostname, servers) => {
+      trustedCalls.push({ hostname, servers });
+      return [{ address: "93.184.216.34" }, { address: "2606:2800:220:1:248:1893:25c8:1946" }];
+    };
+    const runner = new FakeRunner();
+    const provider = new EgoProvider(config, { runner, lookupFn, trustedLookupFn });
+
+    const browseId = await openTask(provider, runner, { url: "https://public.fake-ip.test/start" });
+    runner.reset();
+    runner.queue(
+      (request) => egoResult(request, taskPayload(7, "agent")),
+      (request) => egoResult(request, finishPayload(7)),
+    );
+    const navigated = await provider.browse({
+      action: "call",
+      browseId,
+      page: "p1",
+      method: "page.goto",
+      args: ["https://public.fake-ip.test/next"],
+    });
+
+    expect(navigated).toMatchObject({ browseId, spaceId: 7, status: "ok", pages: ["p1"] });
+    expect(systemHosts).toEqual(["public.fake-ip.test", "public.fake-ip.test"]);
+    expect(trustedCalls).toEqual([
+      { hostname: "public.fake-ip.test", servers: config.network.trustedDnsServers },
+      { hostname: "public.fake-ip.test", servers: config.network.trustedDnsServers },
+    ]);
+  });
+
+  it("rejects an unverifiable fake-ip open before creating a Task Space", async () => {
+    const config = await makeConfig(dataDir, { allowPrivate: false });
+    const runner = new FakeRunner();
+    const lookupFn = (async () => [{ address: "198.18.0.1", family: 4 }]) as unknown as NonNullable<EgoProviderOptions["lookupFn"]>;
+    const provider = new EgoProvider(config, { runner, lookupFn });
+
+    await expect(provider.browse({
+      action: "open",
+      name: "unverified fake-ip",
+      page: "p1",
+      url: "https://public.fake-ip.test/",
+    })).rejects.toMatchObject({ code: "FAKE_IP_DNS_DETECTED" });
+
+    expect(runner.calls).toHaveLength(0);
+    const registry = JSON.parse(
+      await readFile(join(dataDir, "browse", "tasks.json"), "utf8").catch(() => JSON.stringify({ tasks: {} })),
+    ) as { tasks: Record<string, unknown> };
+    expect(registry.tasks).toEqual({});
   });
 });
 
