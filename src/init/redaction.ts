@@ -1,6 +1,6 @@
 import type { InitIo } from "./prompt.js";
+import { environmentCredentialValues } from "./secrets.js";
 
-const SECRET_ENV = /(API_KEY|APIKEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|_KEY$|AUTH)/i;
 const INLINE_SECRET = /\b([A-Za-z0-9_]*(?:API_KEY|APIKEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)[A-Za-z0-9_]*)\s*[=:]\s*[^\s,;]+/gi;
 
 /**
@@ -9,11 +9,7 @@ const INLINE_SECRET = /\b([A-Za-z0-9_]*(?:API_KEY|APIKEY|TOKEN|SECRET|PASSWORD|P
  * cannot leave a suffix visible.
  */
 export function redactInitText(text: string, env: NodeJS.ProcessEnv): string {
-  const secrets = Object.entries(env)
-    .filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].length > 0)
-    .filter(([key]) => SECRET_ENV.test(key))
-    .map(([, value]) => value)
-    .sort((left, right) => right.length - left.length);
+  const secrets = environmentCredentialValues(env);
   let result = text;
   for (const secret of secrets) result = result.split(secret).join("[redacted]");
   return result.replace(INLINE_SECRET, "$1=[redacted]");

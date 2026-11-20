@@ -28,7 +28,9 @@ export interface InitConfigRepair {
  *
  * `configPatches` are applied to new configuration or to fill an omitted
  * setting; `repairs` require separate old → new confirmation. Neither may
- * contain credentials or other secrets. Configuration is persisted only by
+ * contain credentials or other secrets. The orchestrator enforces this at
+ * runtime by refusing any string or string-array item that exactly matches a
+ * credential-valued environment variable. Configuration is persisted only by
  * the orchestrator's single post-execution write.
  *
  * REDACTION CONTRACT: `notes` and `warnings` are untrusted display strings.
@@ -94,8 +96,9 @@ export interface InitExecuteInput {
  * secret redactor, including confirmation prompts. Component output cannot
  * bypass that boundary by placing an environment secret in any of those
  * fields. Do not put secrets in configuration patches: schema validation
- * rejects undeclared fields, and credential persistence is outside this
- * contract.
+ * rejects undeclared fields, and a central runtime guard refuses strings and
+ * string-array items that exactly match credential-valued environment
+ * variables before any configuration write.
  */
 export interface InitComponent {
   readonly id: InitComponentId;

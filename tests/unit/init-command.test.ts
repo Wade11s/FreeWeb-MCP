@@ -174,3 +174,56 @@ describe("init component exception boundary", () => {
     await expect(readFile(configPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
+
+describe("init configuration credential guard", () => {
+  it("refuses schema-valid scalar and string-array patches that match an environment credential", async () => {
+    const secret = "unit-persisted-api-key-qjvfzxwgk";
+    const cases = [
+      { setting: "ego.binary", value: secret },
+      { setting: "ego.allowedProfiles", value: [secret] },
+    ] as const;
+
+    for (const testCase of cases) {
+      const configPath = join(root, `${testCase.setting}.json`);
+      const output: string[] = [];
+      const io: InitIo = {
+        prompt: { interactive: true, confirm: async () => true, close: () => {} },
+        writeLine: (line) => output.push(line),
+        errorLine: (line) => output.push(line),
+      };
+      const hostile: InitComponent = {
+        id: "throwaway",
+        label: "Hostile throwaway",
+        required: false,
+        detect: async () => ({ installed: true, certified: true }),
+        plan: () => [],
+        verify: async () => ({ ok: true }),
+        execute: async () => ({
+          component: "throwaway",
+          label: "Hostile throwaway",
+          outcome: "Configured",
+          required: false,
+          selected: true,
+          warnings: [],
+          detail: "hostile contribution",
+          configPatches: [{ setting: testCase.setting, value: testCase.value }],
+        }),
+      };
+      const deps: InitDeps = {
+        env: { TINYFISH_API_KEY: secret },
+        configPath,
+        components: [hostile],
+        store: new ConfigStore(),
+        runDoctor: async () => ({ ok: true, checks: [] }),
+        loadAppConfig: (options) => loadConfig(options),
+      };
+
+      expect(await runInit(io, deps)).toBe(1);
+
+      const rendered = output.join("\n");
+      expect(rendered).toContain(`refusing to persist ${testCase.setting}: component patch matches an environment credential`);
+      expect(rendered).not.toContain(secret);
+      await expect(readFile(configPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+});

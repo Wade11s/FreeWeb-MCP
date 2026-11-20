@@ -17,6 +17,7 @@ import { initRunSummary, type InitComponentId, type InitComponentResult, type In
 import { buildInitPlan, type InitPlanItem } from "./plan.js";
 import type { InitIo } from "./prompt.js";
 import { redactInitIo } from "./redaction.js";
+import { containsEnvironmentCredential } from "./secrets.js";
 
 export interface InitDeps {
   readonly env: NodeJS.ProcessEnv;
@@ -244,6 +245,10 @@ async function writeConfigurationStep(
   // Execution contributions are last: post-run choices supersede proposals
   // from the pre-run snapshot rather than being silently overwritten by it.
   const patches = [...detectionPatches, ...repairPatches, ...executionPatches];
+  const credentialPatch = patches.find((patch) => containsEnvironmentCredential(patch.value, deps.env));
+  if (credentialPatch) {
+    return failedConfiguration(`refusing to persist ${credentialPatch.setting}: component patch matches an environment credential`);
+  }
   let warnings: InitWarning[] = [];
   let value: Record<string, unknown>;
   let added = 0;
