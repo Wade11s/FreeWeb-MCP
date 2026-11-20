@@ -43,6 +43,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Populate npm cache for offline package verification
+        # npm ci installs from the lockfile but does not populate every registry
+        # packument that the tarball's offline install needs to resolve.
+        run: npm install --package-lock=false --ignore-scripts --no-audit --no-fund
+
       - name: Run checks
         run: npm run check
 
