@@ -19,10 +19,6 @@ export interface CliContext {
   err(text: string): void;
   /** Terminates the process with an exit status; owned by the entry point. */
   exit(code: number): void;
-  /** Absolute path of the Node executable running the CLI. */
-  nodePath: string;
-  /** Absolute path of the running CLI entry script. */
-  executablePath: string;
 }
 
 /** Reads the package version without loading any business configuration. */

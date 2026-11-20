@@ -6,7 +6,19 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const cliPath = resolve("dist/cli.js");
 
+const expectedPrintConfig = {
+  mcpServers: {
+    freeweb: {
+      command: "freeweb-mcp",
+      args: ["mcp"],
+    },
+  },
+} as const;
+const expectedPrintConfigJson = `${JSON.stringify(expectedPrintConfig, null, 2)}\n`;
+
 let root: string | undefined;
+let validConfigPath: string | undefined;
+let missingConfigPath: string | undefined;
 let invalidConfigPath: string | undefined;
 
 interface CliResult {
@@ -19,6 +31,10 @@ function cliEnv(overrides: Record<string, string>): NodeJS.ProcessEnv {
   const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
   return {
     ...env,
+    HOME: root!,
+    USERPROFILE: root!,
+    XDG_CONFIG_HOME: join(root!, "config"),
+    APPDATA: join(root!, "appdata"),
     FREEWEB_CONFIG: join(root!, "missing-config.json"),
     FREEWEB_DATA_DIR: join(root!, "data"),
     FREEWEB_TINYFISH_FREE_ONLY_CONFIRMED: "false",
@@ -39,13 +55,18 @@ function runCli(args: string[], overrides: Record<string, string> = {}): CliResu
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "freeweb-cli-"));
+  validConfigPath = join(root, "valid.json");
+  missingConfigPath = join(root, "missing.json");
   invalidConfigPath = join(root, "invalid.json");
+  await writeFile(validConfigPath, "{}");
   await writeFile(invalidConfigPath, "{ not valid json");
 });
 
 afterEach(async () => {
   if (root) await rm(root, { recursive: true, force: true });
   root = undefined;
+  validConfigPath = undefined;
+  missingConfigPath = undefined;
   invalidConfigPath = undefined;
 });
 
@@ -104,13 +125,38 @@ describe("built CLI surface", () => {
     }
   });
 
-  it("keeps print-config working with invalid business configuration", () => {
+  it("prints the exact executable-native MCP configuration as pure JSON", () => {
     const result = runCli(["print-config"], { FREEWEB_CONFIG: invalidConfigPath! });
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
-    const printed = JSON.parse(result.stdout);
-    expect(printed.mcpServers.freeweb.command).toBe(process.execPath);
-    expect(printed.mcpServers.freeweb.args).toEqual([cliPath, "mcp"]);
+    expect(result.stdout).toBe(expectedPrintConfigJson);
+    expect(JSON.parse(result.stdout)).toEqual(expectedPrintConfig);
+    expect(result.stdout).not.toContain(process.execPath);
+    expect(result.stdout).not.toContain(cliPath);
+  });
+
+  it("prints client configuration without loading valid, missing, or invalid business configuration", () => {
+    for (const configPath of [validConfigPath!, missingConfigPath!, invalidConfigPath!]) {
+      const result = runCli(
+        ["print-config"],
+        { FREEWEB_CONFIG: configPath, FREEWEB_EGO_UNRESTRICTED: "not-a-boolean" },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(JSON.parse(result.stdout)).toEqual(expectedPrintConfig);
+    }
+  });
+
+  it("rejects print-config unknown options and excess arguments on stderr with exit code 1", () => {
+    for (const [args, diagnostic] of [
+      [["print-config", "--nope"], "unknown option"],
+      [["print-config", "extra"], "too many arguments"],
+    ] as const) {
+      const result = runCli([...args]);
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain(diagnostic);
+    }
   });
 
   it("fails unknown commands and unknown options on stderr with exit code 1", () => {

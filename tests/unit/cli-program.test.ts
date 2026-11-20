@@ -8,8 +8,6 @@ const silentContext: CliContext = {
   out: () => {},
   err: () => {},
   exit: () => {},
-  nodePath: process.execPath,
-  executablePath: "/freeweb-mcp/dist/cli.js",
 };
 
 /** The parts of a declared command the probe must mirror exactly. */

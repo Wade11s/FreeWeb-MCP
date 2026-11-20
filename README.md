@@ -118,20 +118,7 @@ Firecrawl and ego private-network access have separate opt-in settings. Do not e
 
 ## MCP client
 
-The MCP client must start the server with the explicit `mcp` subcommand. From a checkout:
-
-```json
-{
-  "mcpServers": {
-    "freeweb": {
-      "command": "/absolute/path/to/node",
-      "args": ["/absolute/path/to/FreeWeb-MCP/dist/cli.js", "mcp"]
-    }
-  }
-}
-```
-
-When the package is installed, the client only needs the executable, which must be resolvable in the MCP client's `PATH`:
+`freeweb-mcp print-config` emits the executable-native client configuration:
 
 ```json
 {
@@ -144,7 +131,9 @@ When the package is installed, the client only needs the executable, which must 
 }
 ```
 
-`node dist/cli.js print-config` prints the checkout example above (Node executable plus the explicit `mcp` subcommand). In MCP mode, stdout is reserved for JSON-RPC; startup and shutdown diagnostics go to stderr.
+The MCP client starts the server with the explicit `mcp` subcommand. `print-config` emits pure JSON on stdout; it never loads business configuration, so it also works when configuration is missing or invalid.
+
+**Deployment prerequisite:** the MCP client process environment must be able to resolve `freeweb-mcp` through its `PATH`. Install or link the package where the client runs, or add a launcher directory to the client's `PATH`. GUI and service clients may not inherit an interactive shell's `PATH`, so verify resolution from the client's own environment. The generated output deliberately contains no Node.js or `dist/cli.js` path. A checkout can still be started directly with `node dist/cli.js mcp`, but that form is not emitted by `print-config`. In MCP mode, stdout is reserved for JSON-RPC; startup and shutdown diagnostics go to stderr.
 
 Restart the MCP client after changing tool-registration settings such as `ego.unrestricted`.
 

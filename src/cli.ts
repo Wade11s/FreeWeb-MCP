@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { resolve } from "node:path";
 import { runCli } from "./cli/main.js";
 
 // The executable entry is the only place that reads argv, writes to the real
@@ -16,7 +15,5 @@ const exitCode = await runCli(process.argv.slice(2), {
   exit: (code) => {
     process.exit(code);
   },
-  nodePath: process.execPath,
-  executablePath: resolve(process.argv[1] ?? "dist/cli.js"),
 });
 if (exitCode !== 0) process.exitCode = exitCode;
