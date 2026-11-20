@@ -629,3 +629,368 @@ describe("CrawlManager hardening", () => {
     expect(manager).toBeDefined();
   });
 });
+
+describe("Crawl Page identity and links", () => {
+  const readStatus = (crawlId: string, offset = 0, limit = 10) =>
+    manager.status({ crawlId, offset, limit, maxCharsPerPage: 50_000 });
+  const urlsOf = (pages: Array<{ url: string }>) => pages.map((page) => page.url);
+
+  it("collapses duplicate Pages within one Provider snapshot and merges newer nonempty data", async () => {
+    const started = await manager.start(crawlInputSchema.parse({ url: "https://example.com" }));
+    adapter.snapshot = {
+      status: "completed",
+      total: 4,
+      completed: 4,
+      pages: [
+        { url: "https://example.com/a", formats: { markdown: "first A", html: "<p>first</p>" } },
+        { url: "https://example.com/b", formats: { markdown: "B" } },
+        { url: "https://example.com/a#section", title: "A title", formats: { markdown: "second A", html: "" } },
+        { url: "https://example.com/c", formats: { markdown: "C" } },
+      ],
+      errors: [],
+    };
+
+    const output = await readStatus(started.crawlId);
+
+    expect(urlsOf(output.pages)).toEqual([
+      "https://example.com/a",
+      "https://example.com/b",
+      "https://example.com/c",
+    ]);
+    expect(output.pages[0].title).toBe("A title");
+    expect(output.pages[0].formats.markdown).toBe("second A");
+    expect(output.pages[0].formats.html).toBe("<p>first</p>");
+    expect(output.total).toBe(3);
+    expect(output.completed).toBe(3);
+    expect(output.returned).toBe(3);
+    expect(output.hasMore).toBe(false);
+  });
+
+  it("ignores fragments while preserving distinct queries and trailing slashes", async () => {
+    const started = await manager.start(crawlInputSchema.parse({ url: "https://example.com" }));
+    adapter.snapshot = {
+      status: "completed",
+      total: 7,
+      completed: 7,
+      pages: [
+        { url: "https://example.com/page#top", formats: { markdown: "fragment" } },
+        { url: "https://example.com/page", formats: { markdown: "plain" } },
+        { url: "https://example.com/page?tab=1", formats: { markdown: "tab one" } },
+        { url: "https://example.com/page?tab=2", formats: { markdown: "tab two" } },
+        { url: "https://example.com/dir", formats: { markdown: "directory" } },
+        { url: "https://example.com/dir/", formats: { markdown: "directory slash" } },
+        { url: "https://example.com/page?tab=1#section", formats: { markdown: "tab one again" } },
+      ],
+      errors: [],
+    };
+
+    const output = await readStatus(started.crawlId);
+
+    expect(urlsOf(output.pages)).toEqual([
+      "https://example.com/page#top",
+      "https://example.com/page?tab=1",
+      "https://example.com/page?tab=2",
+      "https://example.com/dir",
+      "https://example.com/dir/",
+    ]);
+    expect(output.pages[0].formats.markdown).toBe("plain");
+    expect(output.pages[1].formats.markdown).toBe("tab one again");
+    expect(output.total).toBe(5);
+    expect(output.completed).toBe(5);
+  });
+
+  it("uses final-URL aliases to collapse redirects within and across snapshots", async () => {
+    const started = await manager.start(crawlInputSchema.parse({ url: "https://example.com" }));
+    adapter.snapshot = {
+      status: "scraping",
+      total: 2,
+      completed: 2,
+      pages: [
+        { url: "https://example.com/old", finalUrl: "https://example.com/new", formats: { markdown: "old" } },
+        { url: "https://example.com/new", formats: { markdown: "new" } },
+      ],
+      errors: [],
+    };
+
+    const active = await readStatus(started.crawlId);
+    expect(active.pages).toHaveLength(1);
+    expect(active.pages[0]).toMatchObject({
+      url: "https://example.com/old",
+      finalUrl: "https://example.com/new",
+      formats: { markdown: "new" },
+    });
+
+    adapter.snapshot = {
+      status: "completed",
+      total: 2,
+      completed: 2,
+      pages: [{ url: "https://example.com/new#fragment", title: "New", formats: { markdown: "" } }],
+      errors: [],
+    };
+
+    const completed = await readStatus(started.crawlId);
+    expect(completed.pages).toHaveLength(1);
+    expect(completed.pages[0].title).toBe("New");
+    expect(completed.pages[0].formats.markdown).toBe("new");
+    expect(completed.total).toBe(1);
+    expect(completed.completed).toBe(1);
+  });
+
+  it("derives counts and pagination from the unique collection across snapshots", async () => {
+    const started = await manager.start(crawlInputSchema.parse({ url: "https://example.com" }));
+    adapter.snapshot = {
+      status: "scraping",
+      total: 4,
+      completed: 4,
+      pages: [
+        { url: "https://example.com/a", formats: { markdown: "A" } },
+        { url: "https://example.com/a#part", formats: { markdown: "A again" } },
+        { url: "https://example.com/b", formats: { markdown: "B" } },
+      ],
+      errors: [],
+    };
+
+    const active = await readStatus(started.crawlId, 0, 2);
+    expect(active.total).toBe(4);
+    expect(active.completed).toBe(2);
+    expect(active.returned).toBe(2);
+    expect(active.hasMore).toBe(false);
+    expect(urlsOf(active.pages)).toEqual(["https://example.com/a", "https://example.com/b"]);
+
+    adapter.snapshot = {
+      status: "completed",
+      total: 4,
+      completed: 4,
+      pages: [
+        { url: "https://example.com/b", formats: { markdown: "B again" } },
+        { url: "https://example.com/c", formats: { markdown: "C" } },
+        { url: "https://example.com/c#part", formats: { markdown: "C again" } },
+      ],
+      errors: [],
+    };
+
+    const first = await readStatus(started.crawlId, 0, 2);
+    expect(first.total).toBe(3);
+    expect(first.completed).toBe(3);
+    expect(first.returned).toBe(2);
+    expect(first.hasMore).toBe(true);
+    expect(urlsOf(first.pages)).toEqual(["https://example.com/a", "https://example.com/b"]);
+    expect(first.pages[1].formats.markdown).toBe("B again");
+
+    const second = await readStatus(started.crawlId, 2, 2);
+    expect(second.returned).toBe(1);
+    expect(second.hasMore).toBe(false);
+    expect(urlsOf(second.pages)).toEqual(["https://example.com/c"]);
+
+    const artifact = JSON.parse(await artifacts.readText(second.artifactId!));
+    expect(urlsOf(artifact.pages)).toEqual([
+      "https://example.com/a",
+      "https://example.com/b",
+      "https://example.com/c",
+    ]);
+    expect(artifact.total).toBe(3);
+    expect(artifact.completed).toBe(3);
+  });
+
+  it("normalizes a checkpoint that already contains duplicate Pages when it is recovered", async () => {
+    const crawlId = randomUUID();
+    const directory = join(root, "crawls", crawlId);
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "job.json"), JSON.stringify({
+      crawlId,
+      providerJobId: "provider-job-1",
+      status: "scraping",
+      input: crawlInputSchema.parse({ url: "https://example.com" }),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      total: 4,
+      completed: 4,
+      pages: [
+        { url: "https://example.com/a", formats: { markdown: "A one" } },
+        { url: "https://example.com/a#part", formats: { markdown: "A two" } },
+        { url: "https://example.com/b", formats: { markdown: "B" } },
+      ],
+      errors: [],
+    }));
+    manager = new CrawlManager({ adapter, root, output: new ArtifactOutput(artifacts), pollIntervalMs: 0 });
+    await manager.recover();
+
+    const recovered = await readStatus(crawlId);
+    expect(recovered.status).toBe("lost");
+    expect(urlsOf(recovered.pages)).toEqual(["https://example.com/a", "https://example.com/b"]);
+    expect(recovered.pages[0].formats.markdown).toBe("A two");
+    expect(recovered.total).toBe(2);
+    expect(recovered.completed).toBe(2);
+
+    const checkpoint = JSON.parse(await readFile(join(directory, "job.json"), "utf8"));
+    expect(urlsOf(checkpoint.pages)).toEqual(["https://example.com/a", "https://example.com/b"]);
+    expect(checkpoint.total).toBe(2);
+    const artifact = JSON.parse(await artifacts.readText(recovered.artifactId!));
+    expect(urlsOf(artifact.pages)).toEqual(["https://example.com/a", "https://example.com/b"]);
+  });
+
+  it("does not start extra Crawl work to refill a provider limit after deduplication", async () => {
+    const started = await manager.start(crawlInputSchema.parse({ url: "https://example.com", limit: 5 }));
+    adapter.snapshot = {
+      status: "completed",
+      total: 5,
+      completed: 5,
+      pages: [
+        { url: "https://example.com/a", formats: { markdown: "A" } },
+        { url: "https://example.com/a#part", formats: { markdown: "A again" } },
+        { url: "https://example.com/b", formats: { markdown: "B" } },
+        { url: "https://example.com/b#part", formats: { markdown: "B again" } },
+      ],
+      errors: [],
+    };
+
+    const output = await readStatus(started.crawlId);
+
+    expect(adapter.starts).toHaveLength(1);
+    expect(output.pages).toHaveLength(2);
+    expect(output.total).toBe(2);
+    expect(output.completed).toBe(2);
+  });
+
+  it("exposes requested links at the top level while retaining formats.links", async () => {
+    const started = await manager.start(crawlInputSchema.parse({
+      url: "https://example.com",
+      formats: ["markdown", "links"],
+    }));
+    const links = ["https://example.com/a", "https://example.com/b"];
+    adapter.snapshot = {
+      status: "completed",
+      total: 1,
+      completed: 1,
+      pages: [{ url: "https://example.com", formats: { markdown: "# Home", links } }],
+      errors: [],
+    };
+
+    const output = await readStatus(started.crawlId);
+    expect(output.pages[0].links).toEqual(links);
+    expect(output.pages[0].formats.links).toEqual(links);
+
+    const checkpoint = JSON.parse(await readFile(join(root, "crawls", started.crawlId, "job.json"), "utf8"));
+    expect(checkpoint.pages[0].links).toBeUndefined();
+    expect(checkpoint.pages[0].formats.links).toEqual(links);
+    const artifact = JSON.parse(await artifacts.readText(output.artifactId!));
+    expect(artifact.pages[0].links).toBeUndefined();
+    expect(artifact.pages[0].formats.links).toEqual(links);
+  });
+
+  it("keeps top-level links absent when the Job did not request the links format", async () => {
+    const started = await manager.start(crawlInputSchema.parse({ url: "https://example.com" }));
+    adapter.snapshot = {
+      status: "completed",
+      total: 1,
+      completed: 1,
+      pages: [{
+        url: "https://example.com",
+        formats: { markdown: "# Home", links: ["https://example.com/a"] },
+      }],
+      errors: [],
+    };
+
+    const output = await readStatus(started.crawlId);
+    expect(output.pages[0].links).toBeUndefined();
+    expect(output.pages[0].formats.links).toEqual(["https://example.com/a"]);
+  });
+
+  it("counts top-level links toward the inline per-Page budget", async () => {
+    const started = await manager.start(crawlInputSchema.parse({
+      url: "https://example.com",
+      formats: ["markdown", "links"],
+    }));
+    const links = Array.from({ length: 20 }, (_, index) => `https://example.com/${index}`);
+    adapter.snapshot = {
+      status: "completed",
+      total: 1,
+      completed: 1,
+      pages: [{ url: "https://example.com", formats: { markdown: "home", links } }],
+      errors: [],
+    };
+
+    const output = await manager.status({ crawlId: started.crawlId, offset: 0, limit: 1, maxCharsPerPage: 80 });
+    expect(output.pages[0].truncated).toBe(true);
+    expect(output.pages[0].links!.length).toBeLessThan(links.length);
+    expect(output.artifactId).toBeDefined();
+    const artifact = JSON.parse(await artifacts.readText(output.artifactId!));
+    expect(artifact.pages[0].formats.links).toEqual(links);
+  });
+});
+
+describe("Crawl terminal reconciliation", () => {
+  const readStatus = (crawlId: string) =>
+    manager.status({ crawlId, offset: 0, limit: 10, maxCharsPerPage: 50_000 });
+  const jobPath = (crawlId: string) => join(root, "crawls", crawlId, "job.json");
+
+  const seedActiveUpperBound = async () => {
+    const started = await manager.start(crawlInputSchema.parse({ url: "https://example.com" }));
+    adapter.snapshot = {
+      status: "scraping",
+      total: 10,
+      completed: 10,
+      pages: [
+        { url: "https://example.com/a", formats: { markdown: "A" } },
+        { url: "https://example.com/a#part", formats: { markdown: "A again" } },
+        { url: "https://example.com/b", formats: { markdown: "B" } },
+        { url: "https://example.com/c", formats: { markdown: "C" } },
+        { url: "https://example.com/d", formats: { markdown: "D" } },
+        { url: "https://example.com/d#part", formats: { markdown: "D again" } },
+      ],
+      errors: [],
+    };
+    const active = await readStatus(started.crawlId);
+    expect(active.total).toBe(10);
+    expect(active.completed).toBe(4);
+    expect(active.pages).toHaveLength(4);
+    return started.crawlId;
+  };
+
+  const expectReconciledTerminal = async (crawlId: string) => {
+    const terminal = await readStatus(crawlId);
+    expect(terminal.total).toBe(4);
+    expect(terminal.completed).toBe(4);
+    expect(terminal.returned).toBe(4);
+    expect(terminal.hasMore).toBe(false);
+
+    const checkpoint = JSON.parse(await readFile(jobPath(crawlId), "utf8"));
+    expect(checkpoint.total).toBe(4);
+    expect(checkpoint.completed).toBe(4);
+    expect(checkpoint.pages).toHaveLength(4);
+    const artifact = JSON.parse(await artifacts.readText(terminal.artifactId!));
+    expect(artifact.total).toBe(4);
+    expect(artifact.completed).toBe(4);
+    expect(artifact.pages).toHaveLength(4);
+  };
+
+  it("reconciles total when close marks an active Job lost", async () => {
+    const crawlId = await seedActiveUpperBound();
+
+    await manager.close();
+
+    const lost = await readStatus(crawlId);
+    expect(lost.status).toBe("lost");
+    await expectReconciledTerminal(crawlId);
+  });
+
+  it("reconciles total when a missing provider job marks the Job lost", async () => {
+    const crawlId = await seedActiveUpperBound();
+    adapter.getCrawl = async () => { throw new FreeWebError("JOB_NOT_FOUND", "provider forgot the job"); };
+
+    const lost = await readStatus(crawlId);
+    expect(lost.status).toBe("lost");
+    await expectReconciledTerminal(crawlId);
+  });
+
+  it("reconciles total when repeated refresh failures mark the Job failed", async () => {
+    const crawlId = await seedActiveUpperBound();
+    adapter.getCrawl = async () => { throw new FreeWebError("FIRECRAWL_PROCESS_DEAD", "serve exited"); };
+
+    await readStatus(crawlId);
+    await readStatus(crawlId);
+    const failed = await readStatus(crawlId);
+    expect(failed.status).toBe("failed");
+    await expectReconciledTerminal(crawlId);
+  });
+});

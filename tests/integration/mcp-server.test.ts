@@ -5,10 +5,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ArtifactStore } from "../../src/artifacts/artifact-store.js";
+import { ArtifactOutput } from "../../src/artifacts/output.js";
+import { CrawlManager } from "../../src/crawl/crawl-manager.js";
+import type { CrawlJobAdapter, CrawlJobSnapshot } from "../../src/crawl/crawl-job-adapter.js";
 import { FreeWebError } from "../../src/errors.js";
 import { createMcpServer } from "../../src/mcp/server.js";
 import type { FreeWebToolHandlers } from "../../src/mcp/runtime-interface.js";
-import type { BrowseInput, SearchInput } from "../../src/types.js";
+import type { BrowseInput, CrawlInput, CrawlStatusInput, SearchInput } from "../../src/types.js";
+
+class FakeCrawlAdapter implements CrawlJobAdapter {
+  snapshot: CrawlJobSnapshot = { status: "scraping", total: 0, completed: 0, pages: [], errors: [] };
+  starts = 0;
+
+  async startCrawl(_input: CrawlInput) { this.starts++; return { id: "provider-job-1" }; }
+  async getCrawl(_providerJobId: string) { return this.snapshot; }
+  async cancelCrawl(_providerJobId: string) { this.snapshot = { ...this.snapshot, status: "cancelled" }; }
+}
 
 /** Deliberately not the current release: the MCP handshake must echo what it is given. */
 const ordinaryVersion = "1.2.3";
@@ -32,9 +44,9 @@ class FakeRuntime implements FreeWebToolHandlers {
   }
   async fetch(): Promise<any> { throw new FreeWebError("FETCH_DOWN", "fetch unavailable"); }
   async map(): Promise<any> { throw new Error("not used"); }
-  async crawl(): Promise<any> { throw new Error("not used"); }
-  async crawlStatus(): Promise<any> { throw new Error("not used"); }
-  async crawlCancel(): Promise<any> { throw new Error("not used"); }
+  async crawl(_input: CrawlInput): Promise<any> { throw new Error("not used"); }
+  async crawlStatus(_input: CrawlStatusInput): Promise<any> { throw new Error("not used"); }
+  async crawlCancel(_input: { crawlId: string }): Promise<any> { throw new Error("not used"); }
   async managedBrowseToolCall(_input: BrowseInput): Promise<CallToolResult> { throw new Error("not used"); }
   async browseEvaluate(): Promise<any> { throw new Error("not used"); }
   async browseNode() {
@@ -186,5 +198,104 @@ describe("MCP public protocol seam", () => {
     expect(listed.resources.some((resource) => resource.uri === saved.uri)).toBe(true);
     const read = await client.readResource({ uri: saved.uri });
     expect(read.contents[0]).toMatchObject({ uri: saved.uri, text: JSON.stringify({ complete: true }) });
+  });
+
+  it("returns unique Crawl Pages with truthful pagination and links over MCP", async () => {
+    const adapter = new FakeCrawlAdapter();
+    const manager = new CrawlManager({
+      adapter,
+      root,
+      output: new ArtifactOutput(runtime.artifacts),
+      pollIntervalMs: 0,
+    });
+    await manager.recover();
+    runtime.crawl = (input) => manager.start(input);
+    runtime.crawlStatus = (input) => manager.status(input);
+    runtime.crawlCancel = (input) => manager.cancel(input);
+
+    try {
+      const started = await client.callTool({
+        name: "crawl",
+        arguments: { url: "https://example.com", limit: 5, formats: ["markdown", "links"] },
+      });
+      expect(started.isError).not.toBe(true);
+      const crawlId = (started.structuredContent as { crawlId: string }).crawlId;
+      expect(crawlId).toBeDefined();
+
+      adapter.snapshot = {
+        status: "completed",
+        total: 6,
+        completed: 6,
+        pages: [
+          { url: "https://example.com/a", formats: { markdown: "A", links: ["https://example.com/a/1"] } },
+          { url: "https://example.com/a#part", formats: { markdown: "A again", links: ["https://example.com/a/2"] } },
+          { url: "https://example.com/b?tab=1", formats: { markdown: "B one", links: [] } },
+          { url: "https://example.com/b?tab=2", formats: { markdown: "B two", links: [] } },
+          { url: "https://example.com/dir/", formats: { markdown: "dir", links: [] } },
+          { url: "https://example.com/dir", formats: { markdown: "dir no slash", links: [] } },
+        ],
+        errors: [],
+      };
+
+      const first = await client.callTool({
+        name: "crawl_status",
+        arguments: { crawlId, offset: 0, limit: 3 },
+      });
+      expect(first.isError).not.toBe(true);
+      const firstOutput = first.structuredContent as {
+        total: number;
+        completed: number;
+        returned: number;
+        hasMore: boolean;
+        artifactId: string;
+        pages: Array<{ url: string; links?: string[]; formats: Record<string, unknown> }>;
+      };
+      expect(firstOutput.total).toBe(5);
+      expect(firstOutput.completed).toBe(5);
+      expect(firstOutput.returned).toBe(3);
+      expect(firstOutput.hasMore).toBe(true);
+      expect(firstOutput.pages.map((page) => page.url)).toEqual([
+        "https://example.com/a",
+        "https://example.com/b?tab=1",
+        "https://example.com/b?tab=2",
+      ]);
+      expect(firstOutput.pages[0].links).toEqual(["https://example.com/a/2"]);
+      expect(firstOutput.pages[0].formats.links).toEqual(["https://example.com/a/2"]);
+
+      const second = await client.callTool({
+        name: "crawl_status",
+        arguments: { crawlId, offset: 3, limit: 3 },
+      });
+      expect(second.isError).not.toBe(true);
+      const secondOutput = second.structuredContent as typeof firstOutput;
+      expect(secondOutput.returned).toBe(2);
+      expect(secondOutput.hasMore).toBe(false);
+      expect(secondOutput.pages.map((page) => page.url)).toEqual([
+        "https://example.com/dir/",
+        "https://example.com/dir",
+      ]);
+      const exposed = [...firstOutput.pages, ...secondOutput.pages].map((page) => page.url);
+      expect(new Set(exposed).size).toBe(exposed.length);
+
+      const read = await client.readResource({ uri: `freeweb://artifacts/${firstOutput.artifactId}` });
+      const checkpoint = JSON.parse((read.contents[0] as { text: string }).text) as {
+        total: number;
+        completed: number;
+        pages: Array<{ url: string; links?: string[]; formats: Record<string, unknown> }>;
+      };
+      expect(checkpoint.total).toBe(5);
+      expect(checkpoint.completed).toBe(5);
+      expect(checkpoint.pages.map((page) => page.url)).toEqual([
+        "https://example.com/a",
+        "https://example.com/b?tab=1",
+        "https://example.com/b?tab=2",
+        "https://example.com/dir/",
+        "https://example.com/dir",
+      ]);
+      expect(checkpoint.pages.every((page) => page.links === undefined)).toBe(true);
+      expect(adapter.starts).toBe(1);
+    } finally {
+      await manager.close();
+    }
   });
 });
