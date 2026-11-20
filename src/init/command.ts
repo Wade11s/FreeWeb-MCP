@@ -680,7 +680,7 @@ async function writeConfigurationStep(
   if (recovery.rebuild) {
     detail = `damaged file backed up to ${recovery.backup}; conservative configuration rebuilt with ${patches.length} contributed setting${patches.length === 1 ? "" : "s"}`;
   } else if (classification.status === "absent") {
-    detail = `wrote new conservative configuration (no private access, no Search Fallback, no Unrestricted Browse) with ${patches.length} contributed setting${patches.length === 1 ? "" : "s"} to ${deps.configPath}`;
+    detail = `wrote new conservative configuration (no private access, no keyless Firecrawl Search Provider, no Unrestricted Browse) with ${patches.length} contributed setting${patches.length === 1 ? "" : "s"} to ${deps.configPath}`;
   } else {
     detail = appliedRepairs.length > 0
       ? `applied ${appliedRepairs.length} confirmed repair${appliedRepairs.length === 1 ? "" : "s"}, ${patches.length - appliedRepairs.length} other component setting${patches.length - appliedRepairs.length === 1 ? "" : "s"}, and ${added} missing safe default${added === 1 ? "" : "s"} to ${deps.configPath}; every explicit value is preserved`

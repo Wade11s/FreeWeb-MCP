@@ -62,7 +62,7 @@ describe("TinyFish Initialization", () => {
     expect(items[0]).toMatchObject({ component: "tinyfish", required: false, selected: true });
     expect(items[0]!.description).toContain(TINYFISH_FREE_ATTESTATION);
     expect(items[0]!.description).toContain("never install or invoke the global TinyFish CLI");
-    expect(items[0]!.description).toContain("never enable Firecrawl Search Fallback");
+    expect(items[0]!.description).toContain("never enable the keyless Firecrawl Search Provider");
     expect(TINYFISH_FREE_ATTESTATION).toContain("no wallet spending capability");
     expect(TINYFISH_FREE_ATTESTATION).toContain("free credits, a zero balance, disabled auto-reload, and installation success are not substitutes");
     expect(detection.configPatches).toBeUndefined();

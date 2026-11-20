@@ -228,7 +228,32 @@ describe("ProviderRouter Search seam", () => {
     tinyfish.searchError = new FreeWebError("RATE_LIMIT_EXCEEDED", "quota exhausted", { provider: "tinyfish", retryable: true });
 
     await expect(router.search(searchInputSchema.parse({ query: "no fallback", fallback: false })))
-      .rejects.toMatchObject({ code: "ALL_PROVIDERS_FAILED" });
+      .rejects.toMatchObject({ code: "ALL_PROVIDERS_FAILED", message: expect.stringContaining("fallback: false") });
+    expect(firecrawlSearch.inspections).toBe(0);
+    expect(firecrawlSearch.calls).toBe(0);
+  });
+
+  it("separates an unconfigured explicit primary from a disabled per-call fallback", async () => {
+    router = new ProviderRouter({
+      config,
+      output,
+      firecrawl: unusedFirecrawl({ fetchVerdict: SUPPORTED }),
+      firecrawlSearch,
+      cloudUrlValidator: async (url) => new URL(url),
+    });
+
+    await expect(router.search(searchInputSchema.parse({ query: "no primary", provider: "tinyfish", fallback: false })))
+      .rejects.toMatchObject({
+        code: "PROVIDER_NOT_CONFIGURED",
+        message: expect.stringContaining("fallback: false"),
+        options: {
+          details: {
+            fallback: false,
+            requestedProvider: "tinyfish",
+            attempts: [expect.objectContaining({ provider: "tinyfish", outcome: "skipped", code: "PROVIDER_NOT_CONFIGURED" })],
+          },
+        },
+      });
     expect(firecrawlSearch.inspections).toBe(0);
     expect(firecrawlSearch.calls).toBe(0);
   });

@@ -68,7 +68,7 @@ export function defaultConfigFile(): ConfigFile {
 
 /**
  * New configuration with conservative schema defaults (no private-network
- * access, no Search Fallback, no Unrestricted Browse). Components contribute
+ * access, no keyless Firecrawl Search Provider, no Unrestricted Browse). Components contribute
  * provider settings separately through the generic init patch contract.
  */
 export function newConfigFile(): ConfigFile {
@@ -105,7 +105,7 @@ export function completeExistingConfig(raw: Record<string, unknown>): CompletedC
 const HIGH_RISK_SETTINGS: ReadonlyArray<{ readonly path: string; readonly risk: string }> = [
   { path: "tinyfish.freeOnlyConfirmed", risk: "TinyFish stays enabled by your explicit free-only attestation" },
   { path: "firecrawl.allowPrivate", risk: "Firecrawl private-network access stays enabled as you configured it" },
-  { path: "firecrawl.searchFallback", risk: "keyless Firecrawl Search fallback stays enabled as you configured it" },
+  { path: "firecrawl.searchFallback", risk: "the keyless Firecrawl Search Provider stays enabled as you configured it (separate from the per-call Search fallback input)" },
   { path: "ego.allowPrivate", risk: "ego private-network access stays enabled as you configured it" },
   { path: "ego.unrestricted", risk: "unrestricted browse_node execution stays enabled as you configured it" },
 ];

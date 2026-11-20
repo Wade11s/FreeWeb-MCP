@@ -45,7 +45,7 @@ _Avoid_: Crawl、Search
 _Avoid_: Fetch、Scrape
 
 **Fallback**:
-同一操作在首选能力不可用、超时、限流、额度耗尽或不支持内容时，最多改用一个备选能力的过程；有效空结果与目标网站的正常错误响应不触发切换，且调用方可以关闭。
+同一操作在首选能力不可用、超时、限流、额度耗尽或不支持内容时，最多改用一个备选能力的过程；有效空结果与目标网站的正常错误响应不触发切换，且调用方可以关闭。备选 Provider 是否已配置（例如 keyless Firecrawl Search 的独立开关）是配置状态：未配置只表示该 Provider 不存在，不等于调用方关闭了 Fallback。
 _Avoid_: Retry、Provider loop
 
 **Page Evaluation**:

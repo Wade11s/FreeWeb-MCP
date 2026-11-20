@@ -87,7 +87,7 @@ A successful summary means the **Initialization command** succeeded. It does not
 
 ## Configuration and recovery
 
-New configuration uses conservative schema defaults: no private-network access, no Search Fallback, and no Unrestricted Browse. Detected provider paths are absolute where appropriate. Existing valid configuration retains every explicit value and receives only missing safe defaults. High-risk settings produce warnings without silent changes. Credential-valued patches are rejected; TinyFish keys are never configuration contributions.
+New configuration uses conservative schema defaults: no private-network access, no keyless Firecrawl Search Provider, and no Unrestricted Browse. The keyless Search Provider is a configuration state controlled by `firecrawl.searchFallback`; Initialization keeps it disabled and this is separate from the per-call Search `fallback` input. Detected provider paths are absolute where appropriate. Existing valid configuration retains every explicit value and receives only missing safe defaults. High-risk settings produce warnings without silent changes. Credential-valued patches are rejected; TinyFish keys are never configuration contributions.
 
 Writes use a same-directory temporary file, atomic rename, and private permissions (0600 file and 0700 directory where POSIX modes are supported). Damaged configuration is backed up to the first non-overwriting backup name before rebuilding. Existing backups are never replaced.
 

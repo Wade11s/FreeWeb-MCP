@@ -6,6 +6,30 @@ import { Semaphore, SlidingWindowLimiter } from "../util/limiter.js";
 import type { FetchMapAdapter, FetchProvider, SearchProvider } from "./interfaces.js";
 import { assertPublicHttpUrl } from "../security/url.js";
 
+type SearchProviderName = "tinyfish" | "firecrawl-search";
+
+/**
+ * The two Search configuration concepts are deliberately separate: `firecrawl.searchFallback`
+ * decides whether the keyless Firecrawl Search Provider exists, while the per-call `fallback`
+ * input decides whether one alternate Provider may be attempted for this request.
+ */
+const SEARCH_PROVIDER_CONFIG: Record<SearchProviderName, { label: string; requirement: string }> = {
+  tinyfish: {
+    label: "TinyFish Search",
+    requirement: "set TINYFISH_API_KEY and confirm tinyfish.freeOnlyConfirmed",
+  },
+  "firecrawl-search": {
+    label: "Keyless Firecrawl Search",
+    requirement: "enable firecrawl.searchFallback",
+  },
+};
+
+function searchAttemptSummary(attempt: Attempt | undefined): string {
+  if (!attempt) return "did not run";
+  const code = attempt.code ?? (attempt.outcome === "skipped" ? "SKIPPED" : "ERROR");
+  return attempt.outcome === "skipped" ? `was skipped (${code})` : `failed (${code})`;
+}
+
 export class ProviderRouter {
   private readonly firecrawlSemaphore: Semaphore;
   private readonly tinyfishSearchSemaphore: Semaphore;
@@ -29,18 +53,23 @@ export class ProviderRouter {
   }
 
   async search(input: SearchInput): Promise<SearchOutput> {
-    const primary = input.provider === "auto" ? "tinyfish" : input.provider;
-    const names = primary === "tinyfish"
-      ? ["tinyfish", "firecrawl-search"] as const
-      : ["firecrawl-search", "tinyfish"] as const;
-    const candidates = input.fallback ? names : names.slice(0, 1);
+    const primary: SearchProviderName = input.provider === "auto" ? "tinyfish" : input.provider;
+    const alternate: SearchProviderName = primary === "tinyfish" ? "firecrawl-search" : "tinyfish";
+    const candidates: SearchProviderName[] = input.fallback ? [primary, alternate] : [primary];
     const attempts: Attempt[] = [];
     let lastError: unknown;
+    let executed = false;
 
     for (const name of candidates) {
       const provider = name === "tinyfish" ? this.options.tinyfish : this.options.firecrawlSearch;
       if (!provider) {
-        attempts.push({ provider: name, outcome: "skipped", durationMs: 0, code: "PROVIDER_NOT_CONFIGURED", message: "Provider is not configured" });
+        attempts.push({
+          provider: name,
+          outcome: "skipped",
+          durationMs: 0,
+          code: "PROVIDER_NOT_CONFIGURED",
+          message: `${SEARCH_PROVIDER_CONFIG[name].label} is not configured: ${SEARCH_PROVIDER_CONFIG[name].requirement}`,
+        });
         continue;
       }
       const verdict = provider.inspectSearch(input);
@@ -49,6 +78,7 @@ export class ProviderRouter {
         attempts.push({ provider: name, outcome: "skipped", durationMs: 0, code: verdict.code, message: verdict.message });
         continue;
       }
+      executed = true;
       const started = Date.now();
       try {
         const { results } = name === "tinyfish"
@@ -65,7 +95,7 @@ export class ProviderRouter {
           results: results.slice(0, input.limit),
           attempts,
           warnings: attempts.length > 1
-            ? [`Used fallback provider ${name} after ${attempts[0].provider} ${attempts[0].outcome === "skipped" ? "was skipped" : "failed"}`]
+            ? [`Used fallback ${name}: ${searchAttemptSummary(attempts[0])}. Requested ${input.provider === "auto" ? `auto (starts with ${primary})` : input.provider}, actual ${name}, ${attempts.length} attempts.`]
             : [],
           partial: false,
         };
@@ -76,18 +106,62 @@ export class ProviderRouter {
         if (info.code === "UPSTREAM_TIMEOUT_UNCERTAIN") break;
       }
     }
-    if (!lastError && attempts.every((attempt) => attempt.outcome === "skipped")) {
-      throw new FreeWebError("SEARCH_NOT_CONFIGURED", "Search is not configured: set TINYFISH_API_KEY with freeOnlyConfirmed or enable firecrawl.searchFallback", {
-        details: { attempts },
+    if (!executed && !lastError) {
+      // Every candidate was missing its adapter: this is a configuration state, not a request failure.
+      const code = input.provider === "auto" ? "SEARCH_NOT_CONFIGURED" : "PROVIDER_NOT_CONFIGURED";
+      throw new FreeWebError(code, this.describeSearchConfiguration(input, primary, alternate), {
+        details: { attempts, requestedProvider: input.provider, fallback: input.fallback },
       });
     }
-    throw new FreeWebError("ALL_PROVIDERS_FAILED", "All configured Search providers failed", {
+    throw new FreeWebError("ALL_PROVIDERS_FAILED", this.describeSearchFailure(input, primary, alternate, attempts), {
       cause: lastError,
       details: {
         attempts,
+        requestedProvider: input.provider,
+        fallback: input.fallback,
         ...(lastError === undefined ? {} : { cause: lastError instanceof Error ? lastError.message : String(lastError) }),
       },
     });
+  }
+
+  /**
+   * Explains a Search request where no candidate could even be attempted. The wording keeps a
+   * disabled Provider (a configuration state) separate from disabling per-call Fallback.
+   */
+  private describeSearchConfiguration(input: SearchInput, primary: SearchProviderName, alternate: SearchProviderName): string {
+    const primaryRequirement = SEARCH_PROVIDER_CONFIG[primary].requirement;
+    if (!input.fallback) {
+      return input.provider === "auto"
+        ? `Search is not configured: ${primaryRequirement}. Per-call fallback is disabled (fallback: false), so Keyless Firecrawl Search was not inspected or attempted even if firecrawl.searchFallback is enabled.`
+        : `Requested Search Provider ${primary} is not configured: ${primaryRequirement}. Per-call fallback is disabled (fallback: false), so no alternate Provider was inspected or attempted. A disabled Provider is a configuration state; it is not the same as disabling per-call fallback.`;
+    }
+    return input.provider === "auto"
+      ? `Search is not configured: ${primaryRequirement}; alternatively ${SEARCH_PROVIDER_CONFIG[alternate].requirement} for one fallback attempt. Per-call fallback is enabled (fallback: true).`
+      : `Requested Search Provider ${primary} is not configured: ${primaryRequirement}. Per-call fallback is enabled (fallback: true), but the alternate Provider ${alternate} is also unavailable: ${SEARCH_PROVIDER_CONFIG[alternate].requirement}.`;
+  }
+
+  /**
+   * Explains a Search request that had at least one ineligible candidate and no successful attempt.
+   * The per-call Fallback state is always stated explicitly so degradation is attributable.
+   */
+  private describeSearchFailure(
+    input: SearchInput,
+    primary: SearchProviderName,
+    alternate: SearchProviderName,
+    attempts: Attempt[],
+  ): string {
+    const primaryAttempt = attempts.find((attempt) => attempt.provider === primary);
+    if (!input.fallback) {
+      return `Search failed: requested Provider ${primary} ${searchAttemptSummary(primaryAttempt)}. Per-call fallback is disabled (fallback: false), so no alternate Provider was inspected or attempted.`;
+    }
+    const alternateAttempt = attempts.find((attempt) => attempt.provider === alternate);
+    if (alternateAttempt?.code === "PROVIDER_NOT_CONFIGURED") {
+      return `Search failed: requested Provider ${primary} ${searchAttemptSummary(primaryAttempt)}. Per-call fallback is enabled (fallback: true), but ${SEARCH_PROVIDER_CONFIG[alternate].label} is not configured: ${SEARCH_PROVIDER_CONFIG[alternate].requirement}.`;
+    }
+    if (alternateAttempt) {
+      return `Search failed: requested Provider ${primary} ${searchAttemptSummary(primaryAttempt)}; alternate Provider ${alternate} ${searchAttemptSummary(alternateAttempt)}. Per-call fallback is enabled (fallback: true).`;
+    }
+    return `Search failed: requested Provider ${primary} ${searchAttemptSummary(primaryAttempt)}. Per-call fallback is enabled (fallback: true).`;
   }
 
   async fetch(input: FetchInput): Promise<FetchOutput> {
