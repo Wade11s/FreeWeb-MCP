@@ -1,5 +1,5 @@
-import { readFile } from "node:fs/promises";
 import { Command, CommanderError } from "commander";
+import { readPackageMetadata } from "../package-metadata.js";
 import { declareDoctor, registerDoctor } from "./commands/doctor.js";
 import { declareHelp, registerHelp } from "./commands/help.js";
 import { declareInit, registerInit } from "./commands/init.js";
@@ -19,16 +19,6 @@ export interface CliContext {
   err(text: string): void;
   /** Terminates the process with an exit status; owned by the entry point. */
   exit(code: number): void;
-}
-
-/** Reads the package version without loading any business configuration. */
-async function readPackageVersion(): Promise<string> {
-  const packageUrl = new URL("../../package.json", import.meta.url);
-  const parsed = JSON.parse(await readFile(packageUrl, "utf8")) as { version?: unknown };
-  if (typeof parsed.version !== "string" || parsed.version.length === 0) {
-    throw new Error("package.json does not declare a version");
-  }
-  return parsed.version;
 }
 
 /** Routes Commander's output hooks through the CLI context seam. */
@@ -80,7 +70,7 @@ function declareCommands(program: Command): DeclaredCommands {
 export function buildProgram(version: string, ctx: CliContext, result: { code: number }): Command {
   const program = baseProgram(ctx).version(version, "-v, --version", "output the version number");
   const commands = declareCommands(program);
-  registerMcp(commands.mcp, ctx, result);
+  registerMcp(commands.mcp, ctx, result, version);
   registerDoctor(commands.doctor, ctx, result);
   registerInit(commands.init, ctx, result);
   registerPrintConfig(commands.printConfig, ctx);
@@ -214,7 +204,8 @@ function rejectUnknownHelpTopic(rest: readonly string[], program: Command): void
 export async function runCli(argv: readonly string[], ctx: CliContext): Promise<number> {
   const result = { code: 0 };
   try {
-    const program = buildProgram(await readPackageVersion(), ctx, result);
+    const { version } = await readPackageMetadata();
+    const program = buildProgram(version, ctx, result);
 
     if (argv.length === 0) {
       program.outputHelp();
