@@ -111,7 +111,21 @@ node dist/cli.js mcp   # same as npm start
 
 Exit status: `0` only when Firecrawl and the base configuration are usable and no selected operation actually failed; `1` when a selected installation, write, or verification operation fails, or when Firecrawl or the base configuration remains `Pending` or `Failed`. Optional `Pending` or `Skipped` components never fail the run.
 
-Initialization is idempotent: rerun it after an interruption, after a failed run, or after installing a provider manually. This release covers users who already have Firecrawl Local installed; automated Firecrawl installation (#23) and optional TinyFish (#24) and ego-lite (#25) setup arrive in later releases.
+Initialization is idempotent: rerun it after an interruption, after a failed run, or after installing a provider manually. This release covers users who already have Firecrawl Local installed; automated Firecrawl installation (#23) and optional ego-lite (#25) setup arrive in later releases.
+
+### TinyFish Initialization
+
+TinyFish is an optional component in the default plan and uses the SDK already included with FreeWeb-MCP. Initialization never installs or invokes the global TinyFish CLI. You can decline or skip TinyFish without blocking an otherwise ready Firecrawl and configuration baseline.
+
+The API key remains a manual environment step. Set `TINYFISH_API_KEY` in the environment of the process that actually runs FreeWeb-MCP, then rerun `freeweb-mcp init`; GUI and service MCP clients may not inherit an interactive shell's environment. Initialization checks only whether the variable is non-empty. It never asks you to paste the key, prints its value, or writes it to FreeWeb-MCP configuration, shell profiles, system environment configuration, MCP client definitions, logs, summaries, or backups.
+
+Before Initialization can persist `tinyfish.freeOnlyConfirmed: true`, it shows and requires confirmation of this exact attestation:
+
+> This TinyFish API key belongs to an account with no wallet spending capability; free credits, a zero balance, disabled auto-reload, and installation success are not substitutes for this attestation.
+
+Only the boolean attestation is contributed to configuration, after that explicit confirmation. A missing key or missing attestation leaves TinyFish `Pending`, not `Configured`; skipping the optional component reports `Skipped`. TinyFish Initialization does not enable Firecrawl Search Fallback.
+
+Initialization makes no TinyFish wallet, business Search/Fetch, SDK, or other paid-risk verification request. Consequently, `Configured` means only that the environment credential is present and the explicit attestation is effective. Successful Initialization and doctor's TinyFish check do not prove that the key works, that the account has quota, or that TinyFish Search/Fetch is ready.
 
 ## Configuration
 
