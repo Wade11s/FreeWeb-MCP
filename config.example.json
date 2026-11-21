@@ -9,6 +9,7 @@
     "binary": "firecrawl-local",
     "port": 0,
     "allowPrivate": false,
+    "trustWrapperTargetPolicy": false,
     "searchFallback": false
   },
   "ego": {

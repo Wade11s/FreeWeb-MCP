@@ -117,6 +117,28 @@ describe("doctor trusted DNS state", () => {
   });
 });
 
+describe("doctor wrapper-validated Firecrawl target trust", () => {
+  it("reports the default-off setting and its residual redirect risk without probing targets", async () => {
+    const config = await testConfig();
+    const initial = await runDoctor(config, { minimumNodeVersion: [22, 12, 0] });
+    expect(initial.checks.find((check) => check.name === "firecrawl-wrapper-target-policy")).toMatchObject({
+      ok: true,
+      required: false,
+      message: expect.stringContaining("Disabled (default)"),
+    });
+
+    config.network.trustedDnsServers = ["https://1.1.1.1/dns-query"];
+    config.firecrawl.trustWrapperTargetPolicy = true;
+    const enabled = await runDoctor(config, { minimumNodeVersion: [22, 12, 0] });
+    const trust = enabled.checks.find((check) => check.name === "firecrawl-wrapper-target-policy");
+    expect(trust).toMatchObject({ ok: true, required: false });
+    expect(trust?.message).toContain("Enabled");
+    expect(trust?.message).toContain("redirects and subresource requests");
+    expect(trust?.message).toContain("wrapper checked only the entry URL");
+    expect(trust?.message).toContain("redirects to a private target is reachable");
+  });
+});
+
 describe("doctor package metadata", () => {
   it("reads the runtime floor and version from package.json instead of duplicating them", async () => {
     const declared = JSON.parse(await readFile(resolve("package.json"), "utf8")) as {

@@ -386,6 +386,24 @@ describe("Firecrawl Local v0.1.0 provider", () => {
     expect(spawnCalls[0]?.env.FIRECRAWL_LOCAL_ALLOW_PRIVATE).toBe("true");
   });
 
+  it("gives wrapper-validated target trust the same Provider-side relaxation without changing allowPrivate", async () => {
+    const spawnCalls: SpawnCall[] = [];
+    const trustedConfig = config({ port: 34576, trustWrapperTargetPolicy: true });
+    const provider = new FirecrawlLocalProvider(trustedConfig, {
+      probePort: async () => false,
+      http: async (request) => request.method === "GET" ? healthResponse() : { status: 200, body: JSON.stringify({ success: true, data: {} }) },
+      spawner: (call) => { spawnCalls.push(call); return new FakeChild(); },
+      sleep: async () => {},
+      now: () => 0,
+    });
+
+    await provider.fetch(fetchInputSchema.parse({ urls: ["https://example.com"] }));
+    expect(trustedConfig.allowPrivate).toBe(false);
+    expect(spawnCalls[0]?.args).toContain("--allow-private");
+    expect(spawnCalls[0]?.env.FIRECRAWL_LOCAL_ALLOW_PRIVATE).toBe("true");
+    expect(spawnCalls[0]?.env.FIRECRAWL_CLOUD).toBe("off");
+  });
+
   it("starts a Crawl with the same public-only serve protection as Fetch", async () => {
     const spawnCalls: SpawnCall[] = [];
     const requests: HttpRequest[] = [];

@@ -59,6 +59,7 @@ describe("new configuration defaults", () => {
   it("uses conservative schema defaults with no resolved binary", () => {
     const file = newConfigFile();
     expect(file.firecrawl.allowPrivate).toBe(false);
+    expect(file.firecrawl.trustWrapperTargetPolicy).toBe(false);
     expect(file.firecrawl.searchFallback).toBe(false);
     expect(file.ego.unrestricted).toBe(false);
     expect(file.ego.allowPrivate).toBe(false);
@@ -83,6 +84,7 @@ describe("existing configuration completion", () => {
     expect(added).toContain("network.trustedDnsServers");
     expect(added).toContain("tinyfish.freeOnlyConfirmed");
     expect(added).toContain("firecrawl.allowPrivate");
+    expect(added).toContain("firecrawl.trustWrapperTargetPolicy");
     expect(added).not.toContain("firecrawl.port");
     expect(added).not.toContain("artifacts.retentionMs");
   });
@@ -108,6 +110,17 @@ describe("existing configuration completion", () => {
     ]);
     expect(raw.firecrawl.allowPrivate).toBe(true);
     expect(highRiskSettingWarnings({ firecrawl: { allowPrivate: false } })).toEqual([]);
+  });
+
+  it("warns that wrapper target trust leaves redirects and subresources outside the entry-target check", () => {
+    const warnings = highRiskSettingWarnings({
+      network: { trustedDnsServers: ["https://1.1.1.1/dns-query"] },
+      firecrawl: { trustWrapperTargetPolicy: true },
+    });
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.message).toContain("firecrawl.trustWrapperTargetPolicy=true is preserved unchanged");
+    expect(warnings[0]?.message).toContain("redirects and subresource requests can reach private targets");
   });
 
   it("sets a dotted repair path on a copy", () => {

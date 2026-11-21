@@ -520,6 +520,22 @@ describe("init existing configuration handling", () => {
     expect((raw.tinyfish as Record<string, unknown>).freeOnlyConfirmed).toBe(true);
   });
 
+  it("surfaces wrapper target trust as a high-risk workaround and preserves it", async () => {
+    await writeFakeFirecrawl();
+    await writeExistingConfig({
+      network: { trustedDnsServers: ["https://1.1.1.1/dns-query"] },
+      firecrawl: { trustWrapperTargetPolicy: true },
+    });
+    const fake = fakeIo(["y"]);
+    const code = await runInit(fake.io, deps());
+    expect(code).toBe(0);
+    expect(fake.out()).toContain("Warning [HighRiskSetting]: firecrawl.trustWrapperTargetPolicy=true is preserved unchanged");
+    expect(fake.out()).toContain("redirects and subresource requests can reach private targets");
+    const raw = await readConfigFile();
+    expect((raw.firecrawl as Record<string, unknown>).trustWrapperTargetPolicy).toBe(true);
+    expect((raw.firecrawl as Record<string, unknown>).allowPrivate).toBe(false);
+  });
+
   it("applies a stale binary path repair only after its own confirmation", async () => {
     const { binary } = await writeFakeFirecrawl();
     await writeExistingConfig({ firecrawl: { binary: "/gone/firecrawl-local" } });

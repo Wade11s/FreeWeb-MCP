@@ -13,7 +13,7 @@ let root: string | undefined;
 let client: Client | undefined;
 let transport: StdioClientTransport | undefined;
 
-async function startClient(options: { trusted?: boolean; dns?: "plain" | "doh"; firecrawlAllowPrivate?: boolean } = {}) {
+async function startClient(options: { trusted?: boolean; dns?: "plain" | "doh"; firecrawlAllowPrivate?: boolean; trustWrapperTargetPolicy?: boolean } = {}) {
   root = await mkdtemp(join(tmpdir(), "freeweb-fake-ip-stdio-"));
   const firecrawlBinary = join(root, "fake-firecrawl-serve.mjs");
   const egoBinary = join(root, "fake-ego-browser.mjs");
@@ -23,7 +23,11 @@ async function startClient(options: { trusted?: boolean; dns?: "plain" | "doh"; 
   await chmod(egoBinary, 0o700);
   await writeFile(join(root, "config.json"), JSON.stringify({
     network: { trustedDnsServers: ["1.1.1.1", "2606:4700:4700::1111"] },
-    firecrawl: { binary: firecrawlBinary, allowPrivate: options.firecrawlAllowPrivate ?? false },
+    firecrawl: {
+      binary: firecrawlBinary,
+      allowPrivate: options.firecrawlAllowPrivate ?? false,
+      trustWrapperTargetPolicy: options.trustWrapperTargetPolicy ?? false,
+    },
     ego: { binary: egoBinary, allowPrivate: false },
   }));
   const env = Object.fromEntries(
@@ -249,6 +253,57 @@ describe("real stdio Fetch through controlled fake-ip DNS", () => {
     expect(JSON.stringify(result.content)).toContain("PRIVATE_URL_BLOCKED");
     expect(await firecrawlEvents()).toEqual([]);
     expect((await events()).filter((event) => event.kind === "tinyfish-fetch")).toEqual([]);
+  });
+});
+
+describe("real stdio Firecrawl wrapper-validated target trust", () => {
+  it("relaxes only the Provider-side target check for a verified fake-ip entry URL", async () => {
+    const connected = await startClient({ trustWrapperTargetPolicy: true });
+
+    const result = await callFetch(connected, "https://public.fake-ip.test/trusted-entry", "firecrawl-local");
+
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      provider: "firecrawl-local",
+      results: [{ formats: { markdown: "controlled Firecrawl content for https://public.fake-ip.test/trusted-entry" } }],
+      errors: [],
+    });
+    const providerEvents = await firecrawlEvents();
+    expect(providerEvents.filter((event) => event.kind === "local-fetch"))
+      .toEqual([{ kind: "local-fetch", url: "https://public.fake-ip.test/trusted-entry" }]);
+    const starts = providerEvents.filter((event) => event.kind === "serve-start");
+    expect(starts).toHaveLength(1);
+    expect(starts[0]).toMatchObject({ cloud: "off", allowPrivate: "true" });
+    expect(starts[0]?.args).toContain("--allow-private");
+    expect((await events()).some((event) => event.kind === "trusted-a")).toBe(true);
+  });
+
+  it("still blocks unsafe and unverifiable Fetch, Map and Crawl entry targets with zero Provider requests", async () => {
+    const connected = await startClient({ trustWrapperTargetPolicy: true });
+    const cases = [
+      ["fetch", "http://127.0.0.1/", "PRIVATE_URL_BLOCKED"],
+      ["fetch", "http://169.254.169.254/latest/meta-data", "PRIVATE_URL_BLOCKED"],
+      ["fetch", "https://mixed.fake-ip.test/", "PRIVATE_URL_BLOCKED"],
+      ["fetch", "https://unverified.fake-ip.test/", "FAKE_IP_DNS_UNVERIFIED"],
+      ["map", "http://10.0.0.5/private", "PRIVATE_URL_BLOCKED"],
+      ["map", "https://unverified.fake-ip.test/", "FAKE_IP_DNS_UNVERIFIED"],
+      ["crawl", "http://localhost/", "PRIVATE_URL_BLOCKED"],
+      ["crawl", "https://unverified.fake-ip.test/", "FAKE_IP_DNS_UNVERIFIED"],
+    ] as const;
+
+    for (const [operation, url, code] of cases) {
+      const result = operation === "fetch"
+        ? await callFetch(connected, url, "firecrawl-local")
+        : operation === "map"
+          ? await callMap(connected, url)
+          : await callCrawl(connected, url);
+      expect(result.isError, `${operation} ${url}`).toBe(true);
+      expect(failureCode(result), `${operation} ${url}`).toBe(code);
+    }
+
+    expect(await firecrawlEvents()).toEqual([]);
+    expect((await events()).filter((event) => event.kind === "tinyfish-fetch")).toEqual([]);
+    expect(await crawlJobDirectories()).toEqual([]);
   });
 });
 
