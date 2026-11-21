@@ -27,9 +27,9 @@ The built-CLI tests separately cover global/command help, strict option and argu
 
 ### Issue #37 fake-ip MCP regression (2026-11-21)
 
-**Result: incomplete — Firecrawl Local Fetch and Crawl remain blocked by the machine's fake-ip DNS at the Provider boundary. Neither private-access setting was enabled to hide this failure.**
+**Result: the representative live matrix passes on the merged #47/#50 build with the explicit `firecrawl.trustWrapperTargetPolicy` opt-in. Both `firecrawl.allowPrivate` and `ego.allowPrivate` remained false. The opt-in is a non-recommended workaround pending #51, and the redirect-to-private probe was REACHABLE as expected; that residual risk is not a passing safety result.**
 
-The run used the built `dist/cli.js mcp` server through the real stdio MCP protocol, a temporary `FREEWEB_CONFIG` under `/tmp`, and a temporary `FREEWEB_DATA_DIR`. Every MCP session was a new process started after its configuration was written. The user's configuration and global provider installations were not modified. The live configuration shape was:
+The final run at 2026-11-21T05:42:34Z used merge commit `fceac8ac696ee3f5e1d95e8a9b2849e576988930`, the built `dist/cli.js mcp` server through the real stdio MCP protocol, a temporary `FREEWEB_CONFIG` under `/tmp`, and a temporary `FREEWEB_DATA_DIR`. Every MCP session was a new process started after its configuration was written. The user's configuration and global provider installations were not modified. The live configuration shape was:
 
 ```json
 {
@@ -39,6 +39,7 @@ The run used the built `dist/cli.js mcp` server through the real stdio MCP proto
     "binary": "/Users/hwj/.cargo/bin/firecrawl-local",
     "port": 0,
     "allowPrivate": false,
+    "trustWrapperTargetPolicy": true,
     "searchFallback": false
   },
   "ego": {
@@ -49,7 +50,7 @@ The run used the built `dist/cli.js mcp` server through the real stdio MCP proto
 }
 ```
 
-A separate Search Fallback session explicitly set `firecrawl.searchFallback: true`. The no-Provider and Search invocation checks used temporary wrappers that only recorded argv and `FIRECRAWL_CLOUD` before executing these same real binaries. No credentials or page bodies were recorded. `TINYFISH_API_KEY` was absent, no no-wallet-spending attestation was supplied, and no TinyFish live call was made. Controlled TinyFish and Crawl behavior remains covered by the automated MCP integration suites described above; that is not counted as live Provider verification.
+A separate Search Fallback session explicitly set `firecrawl.searchFallback: true`. The no-Provider and Search invocation checks used temporary wrappers that only recorded argv and `FIRECRAWL_CLOUD` before executing these same real binaries. No credentials or page bodies were recorded. `TINYFISH_API_KEY` was absent, no no-wallet-spending attestation was supplied, and no TinyFish live call was made. Controlled TinyFish behavior remains covered by the automated MCP integration suites described above; that is not counted as live Provider verification.
 
 Environment and commands:
 
@@ -65,6 +66,7 @@ npm run verify:pack
 node /tmp/freeweb-issue-37/live-regression.mjs live
 node /tmp/freeweb-issue-37/live-regression.mjs search
 node /tmp/freeweb-issue-37/live-regression.mjs failsafe
+node /tmp/freeweb-issue-37/live-regression.mjs map-empty
 ```
 
 The throwaway client spawned `node dist/cli.js mcp` with `FREEWEB_CONFIG` and `FREEWEB_DATA_DIR` for every call matrix. The observed outcomes were:
@@ -72,21 +74,25 @@ The throwaway client spawned `node dist/cli.js mcp` with `FREEWEB_CONFIG` and `F
 | Scenario | Real stdio MCP outcome |
 | --- | --- |
 | Initialize and tool registration | **Pass.** Initialize, `package.json`, and CLI `--version` all reported 0.2.6; the default eight tools were registered. Offline package verification independently matched the installed initialize, package, and CLI versions. |
-| Search without configured Providers | **Expected failure.** `SEARCH_NOT_CONFIGURED`, with TinyFish and keyless Firecrawl both skipped. |
+| Search without configured Providers | **Expected configuration failure.** `SEARCH_NOT_CONFIGURED`, with TinyFish and keyless Firecrawl both skipped. |
 | Search Fallback | **Pass for keyless Fallback; TinyFish not live-tested.** Explicit `provider: "tinyfish", fallback: false` returned `PROVIDER_NOT_CONFIGURED` with zero alternate invocations. With `fallback: true`, TinyFish was skipped as unconfigured and exactly one `firecrawl-local search` subprocess ran with `FIRECRAWL_CLOUD=search` and no `--allow-private`; `firecrawl-search` returned two results, two attempts, and a degradation warning. |
-| Fetch `https://example.com/` | **Unresolved failure.** The explicit DoH target check passed, then Firecrawl Local returned `BLOCKED_TARGET`: `example.com does not resolve to an address Firecrawl Local may reach` (outer MCP error `ALL_PROVIDERS_FAILED`). |
-| Map | **Successful empty results only.** `example.com`, `www.iana.org`, and the `example.com/favicon.ico` empty-result case each succeeded through Firecrawl Local with one attempt, no warnings, and `links: []`. Non-empty Map discovery was not established by this run. |
+| Fetch `https://example.com/`, markdown + links | **Pass.** One Firecrawl attempt succeeded with no Fallback, warnings, partial output, or errors. The Page had markdown, empty top-level `links`, and an equal empty `formats.links` array. |
+| Map non-empty | **Pass.** `example.com` returned one link and `www.iana.org` returned ten links, each with one successful Firecrawl attempt, no warnings, and `partial: false`. |
+| Valid empty Map | **Controlled real-stdio integration passes; not claimed as a live observation.** Supplemental live 204 and missing-page Map probes returned their entry URL and, for IANA, additional links rather than an empty list. |
 | Nonexistent public domain | **Pass.** Fetch and Map for a deliberately nonexistent `.invalid` name returned retryable `FAKE_IP_DNS_UNVERIFIED`, naming the DoH endpoint and MCP restart/session-reload remediation before Provider execution. |
-| Crawl start/status | **Unresolved Provider failure.** Start returned a Crawl Job, but terminal status was `completed` with zero Pages, `partial: true`, and Firecrawl's `BLOCKED_TARGET` for `www.iana.org`. |
-| Crawl deduplication, pagination, and links | **Not live-verified.** Offset 0/1 status calls were made, but the Provider returned no Pages, so real deduplication, non-empty pagination, and top-level/`formats.links` consistency could not be demonstrated. Controlled real-stdio integration coverage passes. |
-| Managed Browse and Page Evaluation | **Pass.** ego-lite opened and evaluated `https://example.com/` with private access disabled; evaluation observed the public `Example Domain` title. The Task Space was explicitly closed with `closedSpace: true`. |
+| Crawl start/status | **Pass.** `www.iana.org` started as `scraping`, then reached `completed` with four Pages, `total: 4`, `completed: 4`, `partial: false`, no errors, and a checkpoint Artifact. |
+| Crawl deduplication | **Pass.** All four live Pages were unique after fragment normalization and terminal totals matched the unique collection. Controlled real-stdio duplicate/fragment cases separately prove duplicate collapsing. |
+| Crawl pagination | **Pass.** Offset 0 and offset 1 with limit 1 each returned one distinct Page (`/` and `/about`), with `hasMore: true`. |
+| Crawl links | **Pass.** With an untruncated status preview, every Page's top-level `links` equaled `formats.links`; the four counts were 23/23, 28/28, 38/38, and 38/38. |
+| Managed Browse open and Page Evaluation | **Pass.** ego-lite opened and evaluated `https://example.com/` with private access disabled; evaluation observed the public `Example Domain` title. |
 | Unknown Page | **Pass.** Native call and Page Evaluation for `p9` both returned `EGO_PAGE_NOT_FOUND`, with requested `p9` and available `p1`. |
-| Handoff/status/resume | **Pass.** Handoff kept the same browseId and Space; status reported `handoff` and `agentDelegatedToUser`; Page work returned `EGO_USER_CONTROL_REQUIRED`; explicit resume and subsequent evaluation succeeded before close. |
-| No trusted DNS | **Passing-safe.** Fetch, Map, Crawl, and Managed Browse all returned `FAKE_IP_DNS_DETECTED`. There were zero Provider invocations, Crawl Job directories, and Browse Task Spaces. |
-| Unusable DoH (`https://1.1.1.1:1/dns-query`) | **Passing-safe.** The same four tools all returned retryable `FAKE_IP_DNS_UNVERIFIED`, again with zero Provider invocations, Crawl Job directories, and Browse Task Spaces. |
-| Genuinely private target (`http://127.0.0.1:9/`) | **Passing-safe.** The same four tools all returned `PRIVATE_URL_BLOCKED`, with zero Provider invocations, Crawl Job directories, and Browse Task Spaces. |
+| Handoff/status/resume | **Pass.** Handoff kept the same browseId and Space; status reported `handoff` and `agentDelegatedToUser`; Page work returned `EGO_USER_CONTROL_REQUIRED`; explicit resume and subsequent evaluation succeeded. Close returned `closedSpace: true`. |
+| Genuinely private target (`http://127.0.0.1:9/`) with wrapper trust on | **Passing-safe.** Fetch, Map, Crawl, and Managed Browse all returned `PRIVATE_URL_BLOCKED`, with zero Provider invocations, Crawl Job directories, and Browse Task Spaces. |
+| Redirect to private with wrapper trust on | **REACHABLE — residual risk confirmed.** A public Postman Echo redirect returned a 302 to a harness-owned loopback HTTP server. Firecrawl followed it; the loopback server observed `GET /issue-37-controlled-private-target`, and Fetch returned the controlled private Page with that loopback `finalUrl`. |
+| No trusted DNS | **Passing-safe.** Fetch, Map, Crawl, and Managed Browse all returned `FAKE_IP_DNS_DETECTED`. There were zero Provider invocations, Crawl Job directories, and Browse Task Spaces. Wrapper target trust was false in this session because #50 rejects the invalid no-resolver combination. |
+| Unusable DoH (`https://1.1.1.1:1/dns-query`) with wrapper trust on | **Passing-safe.** The same four tools all returned retryable `FAKE_IP_DNS_UNVERIFIED`, again with zero Provider invocations, Crawl Job directories, and Browse Task Spaces. |
 
-The remaining Firecrawl Fetch/Crawl failure means the representative live-scenario acceptance criterion is **not satisfied**. Explicit DoH verifies the MCP wrapper's target decision; it does not change Firecrawl Local's own system-DNS/public-only resolution. No `allowPrivate` override, TinyFish credential search, paid call, or automatic Fallback was used to work around these limitations.
+`firecrawl.trustWrapperTargetPolicy` remains default-off and non-recommended pending the upstream Provider fix in #51. The wrapper validates only entry URLs. With the opt-in enabled, Firecrawl follows redirects and subresource requests without another wrapper check, and Crawl-discovered targets are likewise not individually wrapper-validated. The live redirect probe demonstrates that this is a real residual risk, not a sandbox or a recommended security boundary. No `allowPrivate` override, TinyFish credential search, paid call, or automatic TinyFish Fallback was used. The previous Firecrawl `BLOCKED_TARGET` Fetch/Crawl failures did not recur on the merged build.
 
 The older provider checks below are not the issue #26 all-component Initialization live run. That run remains unexecuted; its procedure and evidence scaffold are [docs/providers/macos-live-run.md](providers/macos-live-run.md) and [docs/providers/macos-live-evidence.md](providers/macos-live-evidence.md). Windows, Debian/Ubuntu, other Linux distributions, and other platforms have simulated Initialization coverage only and were not live-tested.
 
