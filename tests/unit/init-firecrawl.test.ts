@@ -114,6 +114,7 @@ describe("Firecrawl init verification", () => {
       host: "127.0.0.1",
       port: 0,
       allowPrivate: false,
+      trustWrapperTargetPolicy: false,
       searchFallback: false,
     });
     expect(requests).toEqual(["GET /health"]);

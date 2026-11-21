@@ -500,15 +500,19 @@ export async function startFirecrawlRuntime(
     });
   }
   const baseUrl = `http://${host}:${port}`;
+  // The validated opt-in trusts only the wrapper's entry-target policy; it never
+  // changes the reported allowPrivate setting. Configuration rejects it unless
+  // trusted DNS is present and allowPrivate is false.
+  const relaxTargetPolicy = config.allowPrivate || config.trustWrapperTargetPolicy;
   const env = childProcessEnv({
     FIRECRAWL_CLOUD: "off",
     // firecrawl-local binds this variable to a clap bool flag, so it accepts
     // only the words true/false; "1"/"0" make serve exit with a usage error.
-    FIRECRAWL_LOCAL_ALLOW_PRIVATE: config.allowPrivate ? "true" : "false",
+    FIRECRAWL_LOCAL_ALLOW_PRIVATE: relaxTargetPolicy ? "true" : "false",
   });
   const secrets = collectSecretValues(process.env);
   const args = ["serve", "--host", host, "--port", String(port)];
-  if (config.allowPrivate) args.push("--allow-private");
+  if (relaxTargetPolicy) args.push("--allow-private");
   const call: SpawnCall = {
     command: config.binary,
     args,
