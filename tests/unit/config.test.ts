@@ -83,6 +83,78 @@ describe("trusted DNS configuration", () => {
   });
 });
 
+describe("wrapper-validated Firecrawl target trust configuration", () => {
+  it("defaults off and applies the single-value boolean environment override", async () => {
+    const missing = join(root, "missing.json");
+    const initial = await loadConfig({ configPath: missing, env: {} });
+    expect(initial.firecrawl.trustWrapperTargetPolicy).toBe(false);
+
+    const enabled = await loadConfig({
+      configPath: missing,
+      env: {
+        FREEWEB_TRUSTED_DNS_SERVERS: "https://1.1.1.1/dns-query",
+        FREEWEB_FIRECRAWL_TRUST_WRAPPER_TARGET_POLICY: "true",
+      },
+    });
+    expect(enabled.firecrawl.trustWrapperTargetPolicy).toBe(true);
+    expect(enabled.firecrawl.allowPrivate).toBe(false);
+
+    const path = join(root, "config.json");
+    await writeFile(path, JSON.stringify({
+      network: { trustedDnsServers: ["1.1.1.1"] },
+      firecrawl: { trustWrapperTargetPolicy: true },
+    }));
+    const disabled = await loadConfig({
+      configPath: path,
+      env: { FREEWEB_FIRECRAWL_TRUST_WRAPPER_TARGET_POLICY: "false" },
+    });
+    expect(disabled.firecrawl.trustWrapperTargetPolicy).toBe(false);
+  });
+
+  it("rejects wrapper target trust without trusted DNS", async () => {
+    const path = join(root, "config.json");
+    await writeFile(path, JSON.stringify({ firecrawl: { trustWrapperTargetPolicy: true } }));
+
+    await expect(loadConfig({ configPath: path, env: {} })).rejects.toMatchObject({
+      code: "INVALID_CONFIG",
+      message: expect.stringContaining("network.trustedDnsServers"),
+    });
+    await expect(loadConfig({
+      configPath: join(root, "missing.json"),
+      env: { FREEWEB_FIRECRAWL_TRUST_WRAPPER_TARGET_POLICY: "yes" },
+    })).rejects.toMatchObject({ code: "INVALID_CONFIG" });
+  });
+
+  it("rejects wrapper target trust together with Firecrawl private access", async () => {
+    const path = join(root, "config.json");
+    await writeFile(path, JSON.stringify({
+      network: { trustedDnsServers: ["1.1.1.1"] },
+      firecrawl: { allowPrivate: true, trustWrapperTargetPolicy: true },
+    }));
+
+    await expect(loadConfig({ configPath: path, env: {} })).rejects.toMatchObject({
+      code: "INVALID_CONFIG",
+      message: expect.stringContaining("firecrawl.allowPrivate"),
+    });
+  });
+
+  it("keeps the opt-in visible and allowPrivate unchanged in redacted configuration", async () => {
+    const path = join(root, "config.json");
+    await writeFile(path, JSON.stringify({
+      network: { trustedDnsServers: ["1.1.1.1"] },
+      firecrawl: { trustWrapperTargetPolicy: true },
+    }));
+    const config = await loadConfig({
+      configPath: path,
+      env: { TINYFISH_API_KEY: "wrapper-trust-redaction-key" },
+    });
+
+    const redacted = redactedConfig(config);
+    expect(redacted.firecrawl).toMatchObject({ allowPrivate: false, trustWrapperTargetPolicy: true });
+    expect(JSON.stringify(redacted)).not.toContain("wrapper-trust-redaction-key");
+  });
+});
+
 describe("configuration environment overrides", () => {
   it("revalidates port ranges after applying environment overrides", async () => {
     await expect(loadConfig({ configPath: join(root, "missing.json"), env: { FIRECRAWL_PORT: "70000" } }))

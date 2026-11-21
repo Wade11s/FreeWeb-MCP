@@ -72,7 +72,7 @@ describe("init plan construction", () => {
     const raw = {
       network: { trustedDnsServers: [] },
       tinyfish: { freeOnlyConfirmed: false, searchTimeoutMs: 10_000, fetchTimeoutMs: 150_000 },
-      firecrawl: { binary: "/bin/firecrawl-local", host: "127.0.0.1" as const, port: 0, allowPrivate: false, searchFallback: false, startupTimeoutMs: 30_000, shutdownTimeoutMs: 5000 },
+      firecrawl: { binary: "/bin/firecrawl-local", host: "127.0.0.1" as const, port: 0, allowPrivate: false, trustWrapperTargetPolicy: false, searchFallback: false, startupTimeoutMs: 30_000, shutdownTimeoutMs: 5000 },
       ego: { binary: "ego-browser", unrestricted: false, defaultProfile: "Default", allowedProfiles: ["Default"], allowPrivate: false, taskIdleTimeoutMs: 900_000, taskMaxAgeMs: 3_600_000, maxTasks: 3, maxNodeProcesses: 2 },
       limits: { firecrawlConcurrency: 4, maxCrawlJobs: 3, tinyfishSearchConcurrency: 5, tinyfishSearchPerMinute: 25, tinyfishFetchConcurrency: 3, tinyfishFetchUrlsPerMinute: 100 },
       artifacts: { retentionMs: 86_400_000, inlineFetchPageChars: 50_000, inlineFetchTotalChars: 100_000, inlineNodeChars: 1_000_000, screenshotMaxBytes: 5_000_000 },

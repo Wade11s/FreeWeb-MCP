@@ -68,6 +68,7 @@ function labelOf(name: string): string {
     "ego-browser": "ego-lite command",
     tinyfish: "TinyFish Search/Fetch",
     "trusted-dns": "Trusted DNS for fake-ip",
+    "firecrawl-wrapper-target-policy": "Firecrawl wrapper target trust",
     "ego-platform": "Managed Browse platform",
     "data-directory": "Data directory",
   };

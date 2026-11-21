@@ -192,6 +192,7 @@ export function createFirecrawlComponent(deps: FirecrawlComponentDeps = {}): Ini
       host: "127.0.0.1",
       port: 0,
       allowPrivate: false,
+      trustWrapperTargetPolicy: false,
       searchFallback: false,
       startupTimeoutMs: input.timeouts?.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS,
       shutdownTimeoutMs: input.timeouts?.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS,

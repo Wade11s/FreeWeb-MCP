@@ -169,6 +169,34 @@ describe("doctor text output", () => {
     expect((await readFile(invocations, "utf8")).trim().split("\n").sort()).toEqual(["--version", "--version", "--version", "--version"]);
   });
 
+  it("reports enabled wrapper target trust, its residual risk, and the redacted configuration without new probes", async () => {
+    const invocations = join(root, "wrapper-trust-doctor-invocations.txt");
+    const firecrawl = await fakeBinary("firecrawl-local", "firecrawl-local 0.1.0", invocations);
+    const ego = await fakeBinary("ego-browser", "ego-browser 1.2.3", invocations);
+    await writeConfig({
+      network: { trustedDnsServers: ["https://1.1.1.1/dns-query"] },
+      firecrawl: { binary: firecrawl, trustWrapperTargetPolicy: true },
+      ego: { binary: ego },
+    });
+
+    const text = runCli(["doctor"]);
+    expect(text.status).toBe(0);
+    expect(text.stdout).toContain("Firecrawl wrapper target trust: Enabled");
+    expect(text.stdout).toContain("redirects and subresource requests");
+    expect(text.stdout).toContain("redirects to a private target is reachable");
+
+    const json = runCli(["doctor", "--json", "--show-config"]);
+    expect(json.status).toBe(0);
+    const report = JSON.parse(json.stdout) as {
+      checks: { name: string; message?: string }[];
+      config: { firecrawl: { allowPrivate: boolean; trustWrapperTargetPolicy: boolean } };
+    };
+    expect(report.checks.find((check) => check.name === "firecrawl-wrapper-target-policy")?.message)
+      .toContain("wrapper checked only the entry URL");
+    expect(report.config.firecrawl).toMatchObject({ allowPrivate: false, trustWrapperTargetPolicy: true });
+    expect((await readFile(invocations, "utf8")).trim().split("\n").sort()).toEqual(["--version", "--version", "--version", "--version"]);
+  });
+
   it("keeps optional warnings from failing an otherwise ready environment", async () => {
     const firecrawl = await fakeBinary("firecrawl-local", "firecrawl-local 9.9.9");
     const ego = await fakeBinary("ego-browser", "ego-browser 1.2.3");
@@ -221,7 +249,7 @@ describe("doctor JSON output", () => {
     };
     expect(report.ok).toBe(true);
     expect(report.checks.map((check) => check.name))
-      .toEqual(["node", "firecrawl-local", "ego-browser", "tinyfish", "trusted-dns", "ego-platform", "data-directory"]);
+      .toEqual(["node", "firecrawl-local", "ego-browser", "tinyfish", "trusted-dns", "firecrawl-wrapper-target-policy", "ego-platform", "data-directory"]);
     expect(report.checks[0]).toMatchObject({ ok: true, required: true, version: process.version });
     expect(report.checks.find((check) => check.name === "tinyfish")).toMatchObject({ ok: false, required: false });
     expect(report.checks.find((check) => check.name === "trusted-dns")).toMatchObject({

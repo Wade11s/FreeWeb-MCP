@@ -24,6 +24,7 @@ export const configFileSchema = z.object({
     host: z.literal("127.0.0.1").default("127.0.0.1"),
     port: z.number().int().min(0).max(65535).default(0),
     allowPrivate: bool.default(false),
+    trustWrapperTargetPolicy: bool.default(false),
     searchFallback: bool.default(false),
     startupTimeoutMs: z.number().int().min(1000).max(120_000).default(30_000),
     shutdownTimeoutMs: z.number().int().min(100).max(30_000).default(5000),
@@ -122,6 +123,7 @@ export async function loadConfig(options: { env?: ConfigEnv; configPath?: string
       binary: env.FIRECRAWL_LOCAL_BIN ?? file.firecrawl.binary,
       port: envInt(env, "FIRECRAWL_PORT") ?? file.firecrawl.port,
       allowPrivate: envBool(env, "FREEWEB_FIRECRAWL_ALLOW_PRIVATE") ?? file.firecrawl.allowPrivate,
+      trustWrapperTargetPolicy: envBool(env, "FREEWEB_FIRECRAWL_TRUST_WRAPPER_TARGET_POLICY") ?? file.firecrawl.trustWrapperTargetPolicy,
       searchFallback: envBool(env, "FREEWEB_FIRECRAWL_SEARCH_FALLBACK") ?? file.firecrawl.searchFallback,
     },
     ego: {
@@ -144,6 +146,18 @@ export async function loadConfig(options: { env?: ConfigEnv; configPath?: string
     dataDir: checked.dataDir!,
     tinyfish: { ...checked.tinyfish, apiKey },
   };
+  if (validated.firecrawl.trustWrapperTargetPolicy && validated.network.trustedDnsServers.length === 0) {
+    throw new FreeWebError(
+      "INVALID_CONFIG",
+      "firecrawl.trustWrapperTargetPolicy requires network.trustedDnsServers so the wrapper can verify targets; configure trusted DNS or disable wrapper target trust",
+    );
+  }
+  if (validated.firecrawl.trustWrapperTargetPolicy && validated.firecrawl.allowPrivate) {
+    throw new FreeWebError(
+      "INVALID_CONFIG",
+      "firecrawl.trustWrapperTargetPolicy cannot be enabled with firecrawl.allowPrivate because the wrapper would not enforce public-only targets",
+    );
+  }
   if (!validated.ego.allowedProfiles.includes(validated.ego.defaultProfile)) {
     throw new FreeWebError("INVALID_CONFIG", "ego.defaultProfile must be in ego.allowedProfiles");
   }

@@ -94,6 +94,14 @@ export async function runDoctor(config: AppConfig, environment: DoctorEnvironmen
       : "Not configured (default): neither plain DNS nor DoH; all-fake-ip system answers remain unverified",
   });
   checks.push({
+    name: "firecrawl-wrapper-target-policy",
+    ok: true,
+    required: false,
+    message: config.firecrawl.trustWrapperTargetPolicy
+      ? "Enabled: Firecrawl Local follows redirects and subresource requests after the wrapper checked only the entry URL, so a public URL that redirects to a private target is reachable."
+      : "Disabled (default): Firecrawl Local retains its own public-only target checks.",
+  });
+  checks.push({
     name: "ego-platform",
     ok: platform !== "linux",
     required: false,
