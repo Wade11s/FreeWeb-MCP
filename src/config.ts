@@ -3,11 +3,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import * as z from "zod/v4";
 import { FreeWebError } from "./errors.js";
-import { isPublicIpLiteral } from "./security/url.js";
+import { isTrustedDnsServer } from "./security/url.js";
 
 const bool = z.boolean();
-const trustedDnsServer = z.string().refine(isPublicIpLiteral, {
-  message: "Trusted DNS servers must be public IPv4 or IPv6 literals without brackets",
+const trustedDnsServer = z.string().refine(isTrustedDnsServer, {
+  message: "Trusted DNS servers must be public IPv4/IPv6 literals or HTTPS DoH endpoints with public IP-literal hosts and no credentials, query, or fragment",
 });
 export const configFileSchema = z.object({
   dataDir: z.string().min(1).optional(),

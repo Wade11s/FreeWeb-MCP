@@ -1,6 +1,8 @@
 import { lookup, Resolver } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
 import { FreeWebError } from "../errors.js";
+import { resolveDoh, type DohFetchFn } from "./doh.js";
+import { canonicalizeIpAddress } from "./ip-address.js";
 
 /**
  * Address space that must never be reachable through a "public" URL.
@@ -8,6 +10,8 @@ import { FreeWebError } from "../errors.js";
  * arithmetic stay in Node's hands instead of hand-rolled regexes.
  */
 const BLOCKED = new BlockList();
+const IPV6_RESERVED = new BlockList();
+IPV6_RESERVED.addSubnet("::", 8, "ipv6");
 const FAKE_IP = new BlockList();
 FAKE_IP.addSubnet("198.18.0.0", 15, "ipv4");
 
@@ -64,16 +68,38 @@ function normalizeHostname(hostnameInput: string): string {
 
 export function isPublicIpLiteral(hostnameInput: string): boolean {
   if (hostnameInput !== hostnameInput.trim() || /[\[\]%]/.test(hostnameInput)) return false;
-  return isIP(hostnameInput) !== 0 && !isPrivateHostname(hostnameInput);
+  const address = canonicalizeIpAddress(hostnameInput);
+  return address !== undefined && !isPrivateHostname(address.address);
 }
 
-function isFakeIpAddress(address: string): boolean {
-  const hostname = normalizeHostname(address);
-  const family = isIP(hostname);
-  if (family === 4) return FAKE_IP.check(hostname, "ipv4");
-  // BlockList folds IPv4-mapped IPv6 addresses before matching, just as it
-  // does for the private-address policy above.
-  return family === 6 && FAKE_IP.check(hostname, "ipv6");
+/** A DoH endpoint must not need system DNS or carry credentials/query data. */
+export function isDohEndpoint(server: string): boolean {
+  if (server !== server.trim()) return false;
+  let url: URL;
+  try {
+    url = new URL(server);
+  } catch {
+    return false;
+  }
+  const hostname = url.hostname.replace(/^\[|\]$/g, "");
+  return url.protocol === "https:"
+    && !url.username
+    && !url.password
+    && !server.includes("?")
+    && !server.includes("#")
+    && isPublicIpLiteral(hostname);
+}
+
+export function isTrustedDnsServer(server: string): boolean {
+  return isPublicIpLiteral(server) || isDohEndpoint(server);
+}
+
+function isFakeIpAddress(input: string): boolean {
+  const address = canonicalizeIpAddress(normalizeHostname(input));
+  if (!address) return false;
+  if (address.family === 4) return FAKE_IP.check(address.address, "ipv4");
+  if (address.embeddedIpv4 && FAKE_IP.check(address.embeddedIpv4, "ipv4")) return true;
+  return FAKE_IP.check(address.address, "ipv6");
 }
 
 export function isPrivateHostname(hostnameInput: string): boolean {
@@ -83,32 +109,17 @@ export function isPrivateHostname(hostnameInput: string): boolean {
     return true;
   }
 
-  const compatible = hostname.match(/^::(\d+\.\d+\.\d+\.\d+)$/);
-  if (compatible) return BLOCKED.check(compatible[1], "ipv4");
-  const compatibleHex = hostname.match(/^::([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
-  if (compatibleHex) {
-    const value = ((Number.parseInt(compatibleHex[1], 16) << 16) | Number.parseInt(compatibleHex[2], 16)) >>> 0;
-    const dotted = [(value >>> 24) & 255, (value >>> 16) & 255, (value >>> 8) & 255, value & 255].join(".");
-    return BLOCKED.check(dotted, "ipv4");
+  const address = canonicalizeIpAddress(hostname);
+  if (!address) return false;
+  if (address.family === 4) return BLOCKED.check(address.address, "ipv4");
+  if (address.embeddedIpv4) {
+    // Only ::ffff/96 delegates to the IPv4 policy. Compatible, translated and
+    // every other 0000::/8 form remain reserved even when their tail is public.
+    return address.ipv4Mapped ? BLOCKED.check(address.embeddedIpv4, "ipv4") : true;
   }
-  const compatibleSingle = hostname.match(/^::([0-9a-f]{1,4})$/i);
-  if (compatibleSingle) {
-    const value = Number.parseInt(compatibleSingle[1], 16) >>> 0;
-    const dotted = [(value >>> 24) & 255, (value >>> 16) & 255, (value >>> 8) & 255, value & 255].join(".");
-    return BLOCKED.check(dotted, "ipv4");
-  }
-  // Translation-specific forms are rejected explicitly instead of using a
-  // broad BlockList /96, which would fold and reject every IPv4 address.
-  if (hostname.startsWith("::ffff:0:")) return true;
-  const family = isIP(hostname);
-  if (family === 4) return BLOCKED.check(hostname, "ipv4");
-  if (family === 6) {
-    // BlockList folds IPv4-mapped IPv6 addresses (::ffff:0:0/96, dotted or hex
-    // form) into the IPv4 space before matching, so this also covers
-    // ::ffff:127.0.0.1 and ::ffff:7f00:1.
-    return BLOCKED.check(hostname, "ipv6");
-  }
-  return false;
+  // Keep 0000::/8 in an IPv6-only BlockList: adding it to the shared list
+  // would fold into IPv4 and incorrectly block ordinary public IPv4 addresses.
+  return IPV6_RESERVED.check(address.address, "ipv6") || BLOCKED.check(address.address, "ipv6");
 }
 
 export type TrustedLookupFn = (
@@ -137,10 +148,11 @@ const resolveTrusted: TrustedLookupFn = async (hostname, trustedDnsServers) => {
   return addresses;
 };
 
-function fakeIpUnverified(hostname: string, cause?: unknown): FreeWebError {
+function fakeIpUnverified(hostname: string, cause?: unknown, dohEndpoint?: string): FreeWebError {
+  const resolver = dohEndpoint ? ` through DoH endpoint ${dohEndpoint}` : " through trusted DNS";
   return new FreeWebError(
     "FAKE_IP_DNS_UNVERIFIED",
-    `Cannot verify ${hostname} through trusted DNS after system DNS returned only fake-ip addresses; check trusted DNS availability and retry. Configuration changes require MCP restart or session reload`,
+    `Cannot verify ${hostname}${resolver} after system DNS returned only fake-ip addresses; check trusted DNS availability and retry. Configuration changes require MCP restart or session reload`,
     { cause, retryable: true },
   );
 }
@@ -152,6 +164,7 @@ export async function assertPublicHttpUrl(
     lookupFn?: typeof lookup;
     trustedDnsServers?: readonly string[];
     trustedLookupFn?: TrustedLookupFn;
+    dohFetchFn?: DohFetchFn;
   } = {},
 ): Promise<URL> {
   let url: URL;
@@ -193,17 +206,36 @@ export async function assertPublicHttpUrl(
     if (trustedDnsServers.length === 0) {
       throw new FreeWebError(
         "FAKE_IP_DNS_DETECTED",
-        `System DNS returned only fake-ip addresses (198.18.0.0/15) for ${hostname}. Configure network.trustedDnsServers or FREEWEB_TRUSTED_DNS_SERVERS with public DNS server IP literals, then restart the MCP server or reload the session`,
+        `System DNS returned only fake-ip addresses (198.18.0.0/15) for ${hostname}. Configure network.trustedDnsServers or FREEWEB_TRUSTED_DNS_SERVERS with public DNS server IP literals or explicit HTTPS DoH endpoints, then restart the MCP server or reload the session`,
         { retryable: false },
       );
     }
 
-    let trustedAddresses: ReadonlyArray<{ address: string }>;
-    try {
-      trustedAddresses = await (options.trustedLookupFn ?? resolveTrusted)(hostname, trustedDnsServers);
-    } catch (error) {
-      throw fakeIpUnverified(hostname, error);
+    const plainServers = trustedDnsServers.filter((server) => !isDohEndpoint(server));
+    const dohEndpoints = trustedDnsServers.filter(isDohEndpoint);
+    let trustedAddresses: Array<{ address: string }> = [];
+    if (plainServers.length > 0) {
+      try {
+        trustedAddresses.push(...await (options.trustedLookupFn ?? resolveTrusted)(hostname, plainServers));
+      } catch (error) {
+        throw fakeIpUnverified(hostname, error);
+      }
     }
+    const dohAnswers = await Promise.all(dohEndpoints.map(async (endpoint) => {
+      let addresses: ReadonlyArray<{ address: string }>;
+      try {
+        addresses = await resolveDoh(hostname, endpoint, options.dohFetchFn ?? fetch);
+      } catch (error) {
+        throw fakeIpUnverified(hostname, error, endpoint);
+      }
+      // Use the same public-address policy as system and plain trusted DNS. DoH
+      // failures remain retryable and identify only the credential-free endpoint.
+      if (addresses.length === 0 || addresses.some(({ address }) => !isPublicIpLiteral(address))) {
+        throw fakeIpUnverified(hostname, undefined, endpoint);
+      }
+      return addresses;
+    }));
+    for (const addresses of dohAnswers) trustedAddresses.push(...addresses);
     if (trustedAddresses.length === 0) throw fakeIpUnverified(hostname);
     if (trustedAddresses.some(({ address }) => !isPublicIpLiteral(address))) {
       throw new FreeWebError("PRIVATE_URL_BLOCKED", "URL resolves to a local or private-network address through trusted DNS");

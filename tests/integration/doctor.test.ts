@@ -151,9 +151,22 @@ describe("doctor text output", () => {
     const result = runCli(["doctor"]);
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("PASS Trusted DNS for fake-ip: Configured: 1 trusted public DNS server");
+    expect(result.stdout).toContain("PASS Trusted DNS for fake-ip: Configured: 1 plain public DNS server");
     expect(result.stdout).toContain("Configuration changes require MCP restart or session reload");
-    expect((await readFile(invocations, "utf8")).trim().split("\n").sort()).toEqual(["--version", "--version"]);
+
+    await writeConfig({
+      network: { trustedDnsServers: ["https://1.1.1.1/dns-query"] },
+      firecrawl: { binary: firecrawl },
+      ego: { binary: ego },
+    });
+    const doh = runCli(["doctor", "--json"]);
+    expect(doh.status).toBe(0);
+    const report = JSON.parse(doh.stdout) as { checks: { name: string; message?: string; remediation?: string }[] };
+    expect(report.checks.find((check) => check.name === "trusted-dns")).toMatchObject({
+      message: expect.stringContaining("Configured: 1 DoH endpoint"),
+      remediation: expect.stringMatching(/HTTPS DoH endpoints.*MCP restart or session reload/),
+    });
+    expect((await readFile(invocations, "utf8")).trim().split("\n").sort()).toEqual(["--version", "--version", "--version", "--version"]);
   });
 
   it("keeps optional warnings from failing an otherwise ready environment", async () => {
