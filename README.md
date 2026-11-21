@@ -91,8 +91,8 @@ Required checks
 Optional capabilities
   PASS ego-lite command: ego-browser 1.2.3
   WARN TinyFish Search/Fetch: Disabled: TINYFISH_API_KEY is not set
-  PASS Trusted DNS for fake-ip: Not configured (default): all-fake-ip system answers remain unverified
-       Next: Optional for fake-ip DNS: set network.trustedDnsServers or FREEWEB_TRUSTED_DNS_SERVERS to public DNS IP literals. Configuration changes require MCP restart or session reload.
+  PASS Trusted DNS for fake-ip: Not configured (default): neither plain DNS nor DoH; all-fake-ip system answers remain unverified
+       Next: Optional for fake-ip DNS: set network.trustedDnsServers or FREEWEB_TRUSTED_DNS_SERVERS to public DNS IP literals or explicit HTTPS DoH endpoints (required when a proxy hijacks port 53). Configuration changes require MCP restart or session reload.
   PASS Managed Browse platform: darwin
 
 Next steps
@@ -247,7 +247,7 @@ Useful environment overrides:
 | --- | --- |
 | `FREEWEB_CONFIG` | Configuration file path |
 | `FREEWEB_DATA_DIR` | Private Artifact/checkpoint directory (default `~/.freeweb-mcp`) |
-| `FREEWEB_TRUSTED_DNS_SERVERS` | Comma-separated public DNS IPv4/IPv6 literals used only for verified fake-ip Fetch, Map, Crawl and Managed Browse; empty by default |
+| `FREEWEB_TRUSTED_DNS_SERVERS` | Comma-separated public DNS IPv4/IPv6 literals or explicit HTTPS DoH endpoints used only for verified fake-ip Fetch, Map, Crawl and Managed Browse; empty by default |
 | `TINYFISH_API_KEY` | TinyFish key |
 | `FREEWEB_TINYFISH_FREE_ONLY_CONFIRMED` | `true` only after the no-wallet-spending check |
 | `FIRECRAWL_LOCAL_BIN` | Firecrawl binary path |
@@ -258,7 +258,9 @@ Useful environment overrides:
 
 Firecrawl and ego private-network access have separate opt-in settings. Do not enable them for untrusted MCP clients.
 
-`network.trustedDnsServers` defaults to `[]` and accepts only public IP literals, not resolver hostnames or URLs. For a non-IP Fetch, Map, Crawl, Managed Browse open or allowlisted absolute native navigation hostname, trusted DNS is consulted only when every system answer is in `198.18.0.0/15`. Ordinary and mixed answers never contact it. An all-fake-ip answer without configuration returns `FAKE_IP_DNS_DETECTED`; trusted resolution failure or no answers returns retryable `FAKE_IP_DNS_UNVERIFIED`. Every trusted answer must be public. Direct fake-ip literals, private trusted answers, local/private targets, credentialed URLs, and non-HTTP(S) URLs remain blocked, and validation failures never trigger Provider Fallback.
+`network.trustedDnsServers` defaults to `[]` and accepts public IP literals and explicitly configured HTTPS DNS-over-HTTPS (DoH) endpoints side by side. A DoH endpoint such as `https://1.1.1.1/dns-query` must have a public IP-literal host and no credentials, query, or fragment; resolver hostnames are rejected so bootstrap never uses system DNS. For a non-IP Fetch, Map, Crawl, Managed Browse open or allowlisted absolute native navigation hostname, trusted DNS is consulted only when every system answer is in `198.18.0.0/15`. Ordinary and mixed answers never contact it. An all-fake-ip answer without configuration returns `FAKE_IP_DNS_DETECTED`; trusted resolution failure or no answers returns retryable `FAKE_IP_DNS_UNVERIFIED`, naming the DoH endpoint when relevant without exposing a response body. Every trusted answer must be public. Direct fake-ip literals, private trusted answers, local/private targets, credentialed URLs, and non-HTTP(S) URLs remain blocked, and validation failures never trigger Provider Fallback. Each DoH A/AAAA query has one attempt and a short timeout; there is no automatic resolver discovery or Provider/cloud retry.
+
+Plain DNS cannot verify fake-ip targets where a proxy hijacks port 53: even an explicitly configured public resolver's plain DNS traffic can receive fake-ip answers. An explicit DoH endpoint is the opt-in for that environment. No resolver is selected automatically, and neither private-access setting is part of this configuration or its remediation.
 
 Local Fetch, TinyFish Fetch, local Map, Crawl startup, Managed Browse open and allowlisted absolute native navigation all use this shared policy while retaining their own public-only checks; TinyFish revalidates at its Provider boundary and Firecrawl Local keeps its serve-level public-only protection. Rejected Managed Browse opens create no Task Space, and rejected native navigation runs no ego work or replacement Space. An explicit HTTP 200 application failure remains a Map Provider failure with its attempt and cause, while a confirmed empty Map result remains successful. A Crawl target that fails this policy creates no Crawl Job and makes no Provider request. Configuring trusted DNS does not enable either `allowPrivate` setting. Configuration is startup-loaded: after changing `network.trustedDnsServers` or `FREEWEB_TRUSTED_DNS_SERVERS`, restart the MCP server or reload the MCP session.
 
