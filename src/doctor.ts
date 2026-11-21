@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
 import { formatVersion, isAtLeast, type Version } from "./package-metadata.js";
 import { childProcessEnv } from "./providers/firecrawl-process.js";
+import { isDohEndpoint } from "./security/url.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -78,14 +79,19 @@ export async function runDoctor(config: AppConfig, environment: DoctorEnvironmen
         : "Disabled: set freeOnlyConfirmed only for an account with no wallet spending capability"
       : "Disabled: TINYFISH_API_KEY is not set",
   });
-  const trustedDnsCount = config.network.trustedDnsServers.length;
+  const dohCount = config.network.trustedDnsServers.filter(isDohEndpoint).length;
+  const plainDnsCount = config.network.trustedDnsServers.length - dohCount;
+  const configuredKinds = [
+    plainDnsCount > 0 ? `${plainDnsCount} plain public DNS server${plainDnsCount === 1 ? "" : "s"}` : "",
+    dohCount > 0 ? `${dohCount} DoH endpoint${dohCount === 1 ? "" : "s"}` : "",
+  ].filter(Boolean).join(" and ");
   checks.push({
     name: "trusted-dns",
     ok: true,
     required: false,
-    message: trustedDnsCount > 0
-      ? `Configured: ${trustedDnsCount} trusted public DNS server${trustedDnsCount === 1 ? "" : "s"}; used only after an all-fake-ip system answer`
-      : "Not configured (default): all-fake-ip system answers remain unverified",
+    message: configuredKinds
+      ? `Configured: ${configuredKinds}; used only after an all-fake-ip system answer`
+      : "Not configured (default): neither plain DNS nor DoH; all-fake-ip system answers remain unverified",
   });
   checks.push({
     name: "ego-platform",

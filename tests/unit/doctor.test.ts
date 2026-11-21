@@ -94,16 +94,26 @@ describe("doctor trusted DNS state", () => {
     expect(initial.checks.find((check) => check.name === "trusted-dns")).toMatchObject({
       ok: true,
       required: false,
-      message: expect.stringContaining("Not configured"),
+      message: expect.stringContaining("neither plain DNS nor DoH"),
     });
 
     config.network.trustedDnsServers = ["1.1.1.1", "2606:4700:4700::1111"];
-    const configured = await runDoctor(config, { minimumNodeVersion: [22, 12, 0] });
-    expect(configured.checks.find((check) => check.name === "trusted-dns")).toMatchObject({
+    const plain = await runDoctor(config, { minimumNodeVersion: [22, 12, 0] });
+    expect(plain.checks.find((check) => check.name === "trusted-dns")).toMatchObject({
       ok: true,
       required: false,
-      message: expect.stringContaining("Configured: 2"),
+      message: expect.stringContaining("Configured: 2 plain public DNS servers"),
     });
+
+    config.network.trustedDnsServers = ["https://1.1.1.1/dns-query"];
+    const doh = await runDoctor(config, { minimumNodeVersion: [22, 12, 0] });
+    expect(doh.checks.find((check) => check.name === "trusted-dns")?.message)
+      .toContain("Configured: 1 DoH endpoint");
+
+    config.network.trustedDnsServers = ["1.1.1.1", "https://1.1.1.1/dns-query"];
+    const both = await runDoctor(config, { minimumNodeVersion: [22, 12, 0] });
+    expect(both.checks.find((check) => check.name === "trusted-dns")?.message)
+      .toContain("1 plain public DNS server and 1 DoH endpoint");
   });
 });
 

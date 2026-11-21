@@ -14,13 +14,17 @@ describe("trusted DNS configuration", () => {
     expect(config.network.trustedDnsServers).toEqual([]);
   });
 
-  it("accepts public IPv4 and IPv6 literals from the network setting", async () => {
+  it("accepts public IP literals and explicit HTTPS DoH endpoints side by side", async () => {
     const path = join(root, "config.json");
-    await writeFile(path, JSON.stringify({
-      network: { trustedDnsServers: ["1.1.1.1", "2606:4700:4700::1111"] },
-    }));
+    const servers = [
+      "1.1.1.1",
+      "2606:4700:4700::1111",
+      "https://1.1.1.1/dns-query",
+      "https://[2606:4700:4700::1111]:8443/resolve",
+    ];
+    await writeFile(path, JSON.stringify({ network: { trustedDnsServers: servers } }));
     const config = await loadConfig({ configPath: path, env: {} });
-    expect(config.network.trustedDnsServers).toEqual(["1.1.1.1", "2606:4700:4700::1111"]);
+    expect(config.network.trustedDnsServers).toEqual(servers);
   });
 
   it("applies the comma-separated environment override and permits an explicit empty override", async () => {
@@ -28,9 +32,13 @@ describe("trusted DNS configuration", () => {
     await writeFile(path, JSON.stringify({ network: { trustedDnsServers: ["9.9.9.9"] } }));
     const config = await loadConfig({
       configPath: path,
-      env: { FREEWEB_TRUSTED_DNS_SERVERS: " 1.1.1.1, 2606:4700:4700::1111 " },
+      env: { FREEWEB_TRUSTED_DNS_SERVERS: " 1.1.1.1, 2606:4700:4700::1111, https://1.1.1.1/dns-query " },
     });
-    expect(config.network.trustedDnsServers).toEqual(["1.1.1.1", "2606:4700:4700::1111"]);
+    expect(config.network.trustedDnsServers).toEqual([
+      "1.1.1.1",
+      "2606:4700:4700::1111",
+      "https://1.1.1.1/dns-query",
+    ]);
 
     const disabled = await loadConfig({ configPath: path, env: { FREEWEB_TRUSTED_DNS_SERVERS: "" } });
     expect(disabled.network.trustedDnsServers).toEqual([]);
@@ -44,7 +52,16 @@ describe("trusted DNS configuration", () => {
     "198.18.0.1",
     "::1",
     "fd00::1",
-    "https://1.1.1.1",
+    "http://1.1.1.1/dns-query",
+    "https://dns.example/dns-query",
+    "https://127.0.0.1/dns-query",
+    "https://198.18.0.1/dns-query",
+    "https://[fd00::1]/dns-query",
+    "https://user:pass@1.1.1.1/dns-query",
+    "https://1.1.1.1/dns-query?name=example.com",
+    "https://1.1.1.1/dns-query?",
+    "https://1.1.1.1/dns-query#fragment",
+    "https://1.1.1.1/dns-query#",
     "user@1.1.1.1",
     "[2606:4700:4700::1111]",
     "1.1.1.1%eth0",

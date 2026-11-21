@@ -13,7 +13,7 @@ let root: string | undefined;
 let client: Client | undefined;
 let transport: StdioClientTransport | undefined;
 
-async function startClient(options: { trusted?: boolean; firecrawlAllowPrivate?: boolean } = {}) {
+async function startClient(options: { trusted?: boolean; dns?: "plain" | "doh"; firecrawlAllowPrivate?: boolean } = {}) {
   root = await mkdtemp(join(tmpdir(), "freeweb-fake-ip-stdio-"));
   const firecrawlBinary = join(root, "fake-firecrawl-serve.mjs");
   const egoBinary = join(root, "fake-ego-browser.mjs");
@@ -29,6 +29,9 @@ async function startClient(options: { trusted?: boolean; firecrawlAllowPrivate?:
   const env = Object.fromEntries(
     Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
   );
+  const trustedDnsServers = options.dns === "doh"
+    ? "https://1.1.1.1/dns-query"
+    : "1.1.1.1,2606:4700:4700::1111";
   transport = new StdioClientTransport({
     command: process.execPath,
     args: [resolve("dist/cli.js"), "mcp"],
@@ -37,7 +40,7 @@ async function startClient(options: { trusted?: boolean; firecrawlAllowPrivate?:
       NODE_OPTIONS: `${env.NODE_OPTIONS ? `${env.NODE_OPTIONS} ` : ""}--import=${preloadPath}`,
       FREEWEB_CONFIG: join(root, "config.json"),
       FREEWEB_DATA_DIR: join(root, "data"),
-      FREEWEB_TRUSTED_DNS_SERVERS: options.trusted === false ? "" : "1.1.1.1,2606:4700:4700::1111",
+      FREEWEB_TRUSTED_DNS_SERVERS: options.trusted === false ? "" : trustedDnsServers,
       FREEWEB_TEST_FAKE_IP_LOG: join(root, "events.jsonl"),
       FREEWEB_EGO_UNRESTRICTED: "false",
       FREEWEB_TINYFISH_FREE_ONLY_CONFIRMED: "true",
@@ -166,6 +169,42 @@ describe("real stdio Fetch through controlled fake-ip DNS", () => {
     expect(starts).toHaveLength(1);
     expect(starts[0]).toMatchObject({ cloud: "off", allowPrivate: "false" });
     expect(starts[0]?.args).not.toContain("--allow-private");
+  });
+
+  it("retrieves a public target through explicit DoH with both private-access settings disabled", async () => {
+    const connected = await startClient({ dns: "doh" });
+
+    const result = await callFetch(connected, "https://public.fake-ip.test/doh", "firecrawl-local");
+
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      provider: "firecrawl-local",
+      results: [{ formats: { markdown: "controlled Firecrawl content for https://public.fake-ip.test/doh" } }],
+    });
+    const log = await events();
+    expect(log.filter((event) => event.kind === "doh-query")).toEqual([
+      { kind: "doh-query", hostname: "public.fake-ip.test", type: 1 },
+      { kind: "doh-query", hostname: "public.fake-ip.test", type: 28 },
+    ]);
+    expect(log.some((event) => event.kind.startsWith("trusted-"))).toBe(false);
+    const starts = (await firecrawlEvents()).filter((event) => event.kind === "serve-start");
+    expect(starts).toHaveLength(1);
+    expect(starts[0]).toMatchObject({ cloud: "off", allowPrivate: "false" });
+    expect(starts[0]?.args).not.toContain("--allow-private");
+  });
+
+  it("fails a DoH target retryably without Provider Fallback or leaking the response body", async () => {
+    const connected = await startClient({ dns: "doh" });
+
+    const result = await callFetch(connected, "https://doh-unverified.fake-ip.test/", "tinyfish");
+
+    expect(result.isError).toBe(true);
+    expect(toolError(result)).toMatchObject({ code: "FAKE_IP_DNS_UNVERIFIED", retryable: true });
+    expect(JSON.stringify(result.content)).toContain("https://1.1.1.1/dns-query");
+    expect(JSON.stringify(result.content)).not.toContain("controlled DoH failure body");
+    expect((await events()).filter((event) => event.kind === "doh-query")).toHaveLength(2);
+    expect(await firecrawlEvents()).toEqual([]);
+    expect((await events()).filter((event) => event.kind === "tinyfish-fetch")).toEqual([]);
   });
 
   it("reports actionable detection without trusted DNS and starts no Provider", async () => {

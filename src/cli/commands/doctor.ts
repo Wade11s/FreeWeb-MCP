@@ -77,7 +77,7 @@ function labelOf(name: string): string {
 /** Actionable guidance is attached to its check as well as summarized below. */
 function remediationOf(check: DoctorCheck): string | undefined {
   if (check.name === "trusted-dns") {
-    return "Optional for fake-ip DNS: set network.trustedDnsServers or FREEWEB_TRUSTED_DNS_SERVERS to public DNS IP literals. Configuration changes require MCP restart or session reload.";
+    return "Optional for fake-ip DNS: set network.trustedDnsServers or FREEWEB_TRUSTED_DNS_SERVERS to public DNS IP literals or explicit HTTPS DoH endpoints (required when a proxy hijacks port 53). Configuration changes require MCP restart or session reload.";
   }
   if (check.ok && !check.warning) return undefined;
   if (check.warning && check.name === "firecrawl-local") {

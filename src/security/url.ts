@@ -1,6 +1,7 @@
 import { lookup, Resolver } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
 import { FreeWebError } from "../errors.js";
+import { resolveDoh, type DohFetchFn } from "./doh.js";
 
 /**
  * Address space that must never be reachable through a "public" URL.
@@ -65,6 +66,28 @@ function normalizeHostname(hostnameInput: string): string {
 export function isPublicIpLiteral(hostnameInput: string): boolean {
   if (hostnameInput !== hostnameInput.trim() || /[\[\]%]/.test(hostnameInput)) return false;
   return isIP(hostnameInput) !== 0 && !isPrivateHostname(hostnameInput);
+}
+
+/** A DoH endpoint must not need system DNS or carry credentials/query data. */
+export function isDohEndpoint(server: string): boolean {
+  if (server !== server.trim()) return false;
+  let url: URL;
+  try {
+    url = new URL(server);
+  } catch {
+    return false;
+  }
+  const hostname = url.hostname.replace(/^\[|\]$/g, "");
+  return url.protocol === "https:"
+    && !url.username
+    && !url.password
+    && !server.includes("?")
+    && !server.includes("#")
+    && isPublicIpLiteral(hostname);
+}
+
+export function isTrustedDnsServer(server: string): boolean {
+  return isPublicIpLiteral(server) || isDohEndpoint(server);
 }
 
 function isFakeIpAddress(address: string): boolean {
@@ -137,10 +160,11 @@ const resolveTrusted: TrustedLookupFn = async (hostname, trustedDnsServers) => {
   return addresses;
 };
 
-function fakeIpUnverified(hostname: string, cause?: unknown): FreeWebError {
+function fakeIpUnverified(hostname: string, cause?: unknown, dohEndpoint?: string): FreeWebError {
+  const resolver = dohEndpoint ? ` through DoH endpoint ${dohEndpoint}` : " through trusted DNS";
   return new FreeWebError(
     "FAKE_IP_DNS_UNVERIFIED",
-    `Cannot verify ${hostname} through trusted DNS after system DNS returned only fake-ip addresses; check trusted DNS availability and retry. Configuration changes require MCP restart or session reload`,
+    `Cannot verify ${hostname}${resolver} after system DNS returned only fake-ip addresses; check trusted DNS availability and retry. Configuration changes require MCP restart or session reload`,
     { cause, retryable: true },
   );
 }
@@ -152,6 +176,7 @@ export async function assertPublicHttpUrl(
     lookupFn?: typeof lookup;
     trustedDnsServers?: readonly string[];
     trustedLookupFn?: TrustedLookupFn;
+    dohFetchFn?: DohFetchFn;
   } = {},
 ): Promise<URL> {
   let url: URL;
@@ -193,17 +218,36 @@ export async function assertPublicHttpUrl(
     if (trustedDnsServers.length === 0) {
       throw new FreeWebError(
         "FAKE_IP_DNS_DETECTED",
-        `System DNS returned only fake-ip addresses (198.18.0.0/15) for ${hostname}. Configure network.trustedDnsServers or FREEWEB_TRUSTED_DNS_SERVERS with public DNS server IP literals, then restart the MCP server or reload the session`,
+        `System DNS returned only fake-ip addresses (198.18.0.0/15) for ${hostname}. Configure network.trustedDnsServers or FREEWEB_TRUSTED_DNS_SERVERS with public DNS server IP literals or explicit HTTPS DoH endpoints, then restart the MCP server or reload the session`,
         { retryable: false },
       );
     }
 
-    let trustedAddresses: ReadonlyArray<{ address: string }>;
-    try {
-      trustedAddresses = await (options.trustedLookupFn ?? resolveTrusted)(hostname, trustedDnsServers);
-    } catch (error) {
-      throw fakeIpUnverified(hostname, error);
+    const plainServers = trustedDnsServers.filter((server) => !isDohEndpoint(server));
+    const dohEndpoints = trustedDnsServers.filter(isDohEndpoint);
+    let trustedAddresses: Array<{ address: string }> = [];
+    if (plainServers.length > 0) {
+      try {
+        trustedAddresses.push(...await (options.trustedLookupFn ?? resolveTrusted)(hostname, plainServers));
+      } catch (error) {
+        throw fakeIpUnverified(hostname, error);
+      }
     }
+    const dohAnswers = await Promise.all(dohEndpoints.map(async (endpoint) => {
+      let addresses: ReadonlyArray<{ address: string }>;
+      try {
+        addresses = await resolveDoh(hostname, endpoint, options.dohFetchFn ?? fetch);
+      } catch (error) {
+        throw fakeIpUnverified(hostname, error, endpoint);
+      }
+      // Use the same public-address policy as system and plain trusted DNS. DoH
+      // failures remain retryable and identify only the credential-free endpoint.
+      if (addresses.length === 0 || addresses.some(({ address }) => !isPublicIpLiteral(address))) {
+        throw fakeIpUnverified(hostname, undefined, endpoint);
+      }
+      return addresses;
+    }));
+    for (const addresses of dohAnswers) trustedAddresses.push(...addresses);
     if (trustedAddresses.length === 0) throw fakeIpUnverified(hostname);
     if (trustedAddresses.some(({ address }) => !isPublicIpLiteral(address))) {
       throw new FreeWebError("PRIVATE_URL_BLOCKED", "URL resolves to a local or private-network address through trusted DNS");
