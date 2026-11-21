@@ -6,17 +6,19 @@ export interface CanonicalIpAddress {
   family: 4 | 6;
   /** IPv4 embedded in compatible, mapped, or SIIT/translated IPv6. */
   embeddedIpv4?: string;
+  /** Only ::ffff/96 is exempt from the reserved 0000::/8 block. */
+  ipv4Mapped?: boolean;
 }
 
 function dottedIpv4(groups: readonly number[]): string {
   return [groups[6] >>> 8, groups[6] & 255, groups[7] >>> 8, groups[7] & 255].join(".");
 }
 
-function embeddedIpv4(groups: readonly number[]): string | undefined {
+function embeddedIpv4(groups: readonly number[]): { address: string; mapped: boolean } | undefined {
   const compatible = groups.slice(0, 6).every((group) => group === 0);
   const mapped = groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff;
   const siit = groups.slice(0, 4).every((group) => group === 0) && groups[4] === 0xffff && groups[5] === 0;
-  return compatible || mapped || siit ? dottedIpv4(groups) : undefined;
+  return compatible || mapped || siit ? { address: dottedIpv4(groups), mapped } : undefined;
 }
 
 /** RFC 5952: lowercase hextets and the first longest run of at least two zero hextets. */
@@ -65,9 +67,10 @@ export function canonicalizeIpAddress(input: string): CanonicalIpAddress | undef
   if (family === 4) return { address: input, family };
   if (family !== 6) return undefined;
   const groups = ipv6Groups(input);
+  const embedded = embeddedIpv4(groups);
   return {
     address: canonicalIpv6(groups),
     family,
-    ...(embeddedIpv4(groups) ? { embeddedIpv4: dottedIpv4(groups) } : {}),
+    ...(embedded ? { embeddedIpv4: embedded.address, ipv4Mapped: embedded.mapped } : {}),
   };
 }

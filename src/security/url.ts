@@ -10,6 +10,8 @@ import { canonicalizeIpAddress } from "./ip-address.js";
  * arithmetic stay in Node's hands instead of hand-rolled regexes.
  */
 const BLOCKED = new BlockList();
+const IPV6_RESERVED = new BlockList();
+IPV6_RESERVED.addSubnet("::", 8, "ipv6");
 const FAKE_IP = new BlockList();
 FAKE_IP.addSubnet("198.18.0.0", 15, "ipv4");
 
@@ -110,10 +112,14 @@ export function isPrivateHostname(hostnameInput: string): boolean {
   const address = canonicalizeIpAddress(hostname);
   if (!address) return false;
   if (address.family === 4) return BLOCKED.check(address.address, "ipv4");
-  // Compatible, mapped and SIIT/translated IPv6 all authorize according to
-  // their embedded IPv4 address, regardless of textual padding or dotted form.
-  if (address.embeddedIpv4 && BLOCKED.check(address.embeddedIpv4, "ipv4")) return true;
-  return BLOCKED.check(address.address, "ipv6");
+  if (address.embeddedIpv4) {
+    // Only ::ffff/96 delegates to the IPv4 policy. Compatible, translated and
+    // every other 0000::/8 form remain reserved even when their tail is public.
+    return address.ipv4Mapped ? BLOCKED.check(address.embeddedIpv4, "ipv4") : true;
+  }
+  // Keep 0000::/8 in an IPv6-only BlockList: adding it to the shared list
+  // would fold into IPv4 and incorrectly block ordinary public IPv4 addresses.
+  return IPV6_RESERVED.check(address.address, "ipv6") || BLOCKED.check(address.address, "ipv6");
 }
 
 export type TrustedLookupFn = (

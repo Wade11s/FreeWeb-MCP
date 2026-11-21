@@ -809,6 +809,17 @@ describe("isPrivateHostname", () => {
     "0:0:0:0:FFFF:0:A9FE:A9FE",
     "0:0:0:0:0:FFFF:7F00:0001",
     "::FFFF:0:169.254.169.254",
+    "0:0:0:ffff:0:0:169.254.169.254",
+    "0:0:0:FFFF:0:0:A9FE:A9FE",
+    "::1:2:3",
+    "0:0:0:0:0:1:2:3",
+    "0:0:0:ffff::1",
+    "0:0:0:FFFF::1",
+    "::ffff:0:0:8.8.8.8",
+    "0:0:0:FFFF:0:0:0808:0808",
+    "::8.8.8.8",
+    "0:0:0:0:0:0:0808:0808",
+    "::FFFF:0:8.8.8.8",
   ])("treats %s as private", (hostname) => {
     expect(isPrivateHostname(hostname)).toBe(true);
   });
@@ -820,8 +831,8 @@ describe("isPrivateHostname", () => {
     PUBLIC_V6,
     "2001:4860:4860::8888",
     "::ffff:8.8.8.8",
-    "::8.8.8.8",
-    "::FFFF:0:8.8.8.8",
+    "::FFFF:8.8.8.8",
+    "0:0:0:0:0:FFFF:0808:0808",
   ])("treats %s as public", (hostname) => {
     expect(isPrivateHostname(hostname)).toBe(false);
   });
