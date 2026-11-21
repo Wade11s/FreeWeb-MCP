@@ -18,9 +18,8 @@ export async function runMcpCommand(
   ctx: Pick<CliContext, "err" | "exit">,
   version: string,
 ): Promise<void> {
-  const runtime = await createFreeWebRuntime(config);
-  const handle = serveStdio(() => createMcpServer(runtime, version));
-  ctx.err("FreeWeb-MCP listening on stdio\n");
+  let runtime: Awaited<ReturnType<typeof createFreeWebRuntime>> | undefined;
+  let handle: ReturnType<typeof serveStdio> | undefined;
   let closing = false;
   const close = async (signal: "SIGINT" | "SIGTERM") => {
     if (closing) {
@@ -35,8 +34,8 @@ export async function runMcpCommand(
     }, Math.max(20_000, config.firecrawl.shutdownTimeoutMs + 1000));
     deadline.unref();
     try {
-      const runtimeClosing = runtime.close();
-      await Promise.all([handle.close(), runtimeClosing]);
+      const runtimeClosing = runtime?.close() ?? Promise.resolve();
+      await Promise.all([handle?.close() ?? Promise.resolve(), runtimeClosing]);
       clearTimeout(deadline);
       ctx.exit(0);
     } catch (error) {
@@ -45,6 +44,14 @@ export async function runMcpCommand(
       ctx.exit(1);
     }
   };
+  // Install the handlers before anything can observe readiness. A client that
+  // sends SIGTERM the moment it reads the startup line would otherwise hit the
+  // default disposition, because a signal delivered while the JavaScript thread
+  // is descheduled cannot reach a handler that does not exist yet.
   process.on("SIGINT", () => { void close("SIGINT"); });
   process.on("SIGTERM", () => { void close("SIGTERM"); });
+
+  runtime = await createFreeWebRuntime(config);
+  handle = serveStdio(() => createMcpServer(runtime!, version));
+  ctx.err("FreeWeb-MCP listening on stdio\n");
 }

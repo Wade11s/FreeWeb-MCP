@@ -360,4 +360,34 @@ describe("built CLI surface", () => {
     expect(stdout).toBe("");
     expect(stderr).toContain("FreeWeb-MCP listening on stdio");
   });
+
+  it("has shutdown handlers installed before it reports readiness", async () => {
+    // The preload makes the child signal itself from inside the readiness write,
+    // before the event loop can run another turn. A command that installs its
+    // handlers after that write is killed by the default disposition.
+    const preload = resolve("tests/integration/fixtures/self-sigterm-preload.mjs");
+    const child = spawn(process.execPath, ["--import", preload, cliPath, "mcp"], {
+      env: cliEnv({}),
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+    child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+    const closed = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        reject(new Error(`server did not exit after the self-sent SIGTERM; stderr so far: ${stderr}`));
+      }, 15_000);
+      child.once("close", (code, signal) => {
+        clearTimeout(timer);
+        resolve({ code, signal });
+      });
+    });
+
+    expect(closed.signal).toBeNull();
+    expect(closed.code).toBe(0);
+    expect(stdout).toBe("");
+    expect(stderr).toContain("FreeWeb-MCP listening on stdio");
+  });
 });
