@@ -105,6 +105,7 @@ export function completeExistingConfig(raw: Record<string, unknown>): CompletedC
 const HIGH_RISK_SETTINGS: ReadonlyArray<{ readonly path: string; readonly risk: string }> = [
   { path: "tinyfish.freeOnlyConfirmed", risk: "TinyFish stays enabled by your explicit free-only attestation" },
   { path: "firecrawl.allowPrivate", risk: "Firecrawl private-network access stays enabled as you configured it" },
+  { path: "firecrawl.trustWrapperTargetPolicy", risk: "Firecrawl trusts wrapper-validated entry targets only; redirects and subresource requests can reach private targets" },
   { path: "firecrawl.searchFallback", risk: "the keyless Firecrawl Search Provider stays enabled as you configured it (separate from the per-call Search fallback input)" },
   { path: "ego.allowPrivate", risk: "ego private-network access stays enabled as you configured it" },
   { path: "ego.unrestricted", risk: "unrestricted browse_node execution stays enabled as you configured it" },
