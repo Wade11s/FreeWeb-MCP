@@ -223,6 +223,7 @@ Set `FREEWEB_CONFIG` to use another path. Start with [`config.example.json`](con
     "binary": "firecrawl-local",
     "port": 0,
     "allowPrivate": false,
+    "trustWrapperTargetPolicy": false,
     "searchFallback": false
   },
   "ego": {
@@ -253,6 +254,7 @@ Useful environment overrides:
 | `FIRECRAWL_LOCAL_BIN` | Firecrawl binary path |
 | `FIRECRAWL_PORT` | Fixed port; `0` selects an owned free port |
 | `FREEWEB_FIRECRAWL_SEARCH_FALLBACK` | Enable the keyless Firecrawl Search Provider (separate from the per-call Search `fallback` input) |
+| `FREEWEB_FIRECRAWL_TRUST_WRAPPER_TARGET_POLICY` | Single boolean opt-in for the non-recommended fake-ip workaround described below; defaults to `false` |
 | `EGO_BROWSER_BIN` | ego-browser binary path |
 | `FREEWEB_EGO_UNRESTRICTED` | Register the unrestricted `browse_node` tool |
 
@@ -262,7 +264,11 @@ Firecrawl and ego private-network access have separate opt-in settings. Do not e
 
 Plain DNS cannot verify fake-ip targets where a proxy hijacks port 53: even an explicitly configured public resolver's plain DNS traffic can receive fake-ip answers. An explicit DoH endpoint is the opt-in for that environment. No resolver is selected automatically, and neither private-access setting is part of this configuration or its remediation.
 
-Local Fetch, TinyFish Fetch, local Map, Crawl startup, Managed Browse open and allowlisted absolute native navigation all use this shared policy while retaining their own public-only checks; TinyFish revalidates at its Provider boundary and Firecrawl Local keeps its serve-level public-only protection. Rejected Managed Browse opens create no Task Space, and rejected native navigation runs no ego work or replacement Space. An explicit HTTP 200 application failure remains a Map Provider failure with its attempt and cause, while a confirmed empty Map result remains successful. A Crawl target that fails this policy creates no Crawl Job and makes no Provider request. Configuring trusted DNS does not enable either `allowPrivate` setting. Configuration is startup-loaded: after changing `network.trustedDnsServers` or `FREEWEB_TRUSTED_DNS_SERVERS`, restart the MCP server or reload the MCP session.
+`firecrawl.trustWrapperTargetPolicy` is a **default-off, non-recommended workaround** for fake-ip environments pending the upstream Firecrawl fix tracked in #51. It is valid only when `network.trustedDnsServers` is nonempty and `firecrawl.allowPrivate` is `false`; either invalid combination is refused as `INVALID_CONFIG`. When enabled, the wrapper still applies the shared public-only trusted-DNS policy to every Fetch, Map and Crawl entry URL before any Provider request, while Firecrawl serve receives `--allow-private` and `FIRECRAWL_LOCAL_ALLOW_PRIVATE=true` to skip its duplicate rejection. The reported `firecrawl.allowPrivate` remains `false`.
+
+This workaround is **not safe by default and is not a sandbox**. The wrapper checks only the entry URL; Firecrawl subsequently follows redirects and subresource requests, so a public URL that redirects to a private target is reachable while this setting is on. Crawl-discovered targets likewise are not individually checked by the wrapper. Leave the setting off unless you explicitly accept that residual risk in a fake-ip environment.
+
+Local Fetch, TinyFish Fetch, local Map, Crawl startup, Managed Browse open and allowlisted absolute native navigation all use this shared policy. TinyFish revalidates at its Provider boundary, and Firecrawl Local keeps its serve-level public-only protection unless `firecrawl.allowPrivate` or the constrained wrapper-target-trust workaround explicitly relaxes it. Rejected Managed Browse opens create no Task Space, and rejected native navigation runs no ego work or replacement Space. An explicit HTTP 200 application failure remains a Map Provider failure with its attempt and cause, while a confirmed empty Map result remains successful. A Crawl target that fails this policy creates no Crawl Job and makes no Provider request. Configuring trusted DNS does not enable either `allowPrivate` setting or wrapper target trust. Configuration is startup-loaded: after changing `network.trustedDnsServers`, `FREEWEB_TRUSTED_DNS_SERVERS`, or the wrapper-target-trust setting, restart the MCP server or reload the MCP session.
 
 ### Search providers and per-call Fallback
 
