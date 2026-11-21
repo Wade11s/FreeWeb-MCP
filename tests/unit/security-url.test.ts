@@ -35,7 +35,14 @@ function fakeTrustedLookup(addresses: string[]) {
 }
 
 function ipv6Bytes(address: string): number[] {
-  const [head = "", tail = ""] = address.split("::");
+  let expanded = address;
+  const lastColon = address.lastIndexOf(":");
+  const lastPart = address.slice(lastColon + 1);
+  if (lastPart.includes(".")) {
+    const bytes = lastPart.split(".").map(Number);
+    expanded = `${address.slice(0, lastColon + 1)}${((bytes[0] << 8) | bytes[1]).toString(16)}:${((bytes[2] << 8) | bytes[3]).toString(16)}`;
+  }
+  const [head = "", tail = ""] = expanded.split("::");
   const headGroups = head ? head.split(":") : [];
   const tailGroups = tail ? tail.split(":") : [];
   const groups = [...headGroups, ...Array(8 - headGroups.length - tailGroups.length).fill("0"), ...tailGroups];
@@ -45,26 +52,42 @@ function ipv6Bytes(address: string): number[] {
   });
 }
 
+function encodeDnsName(hostname: string): Buffer {
+  return Buffer.concat([
+    ...hostname.split(".").map((label) => Buffer.concat([Buffer.from([label.length]), Buffer.from(label)])),
+    Buffer.from([0]),
+  ]);
+}
+
+function addressData(type: number, address: string): number[] {
+  return type === 1 ? address.split(".").map(Number) : ipv6Bytes(address);
+}
+
+function dnsAnswer(owner: string, type: number, data: number[] | Buffer): Buffer {
+  const name = encodeDnsName(owner);
+  const answer = Buffer.alloc(name.length + 10 + data.length);
+  name.copy(answer, 0);
+  answer.writeUInt16BE(type, name.length);
+  answer.writeUInt16BE(1, name.length + 2);
+  answer.writeUInt16BE(data.length, name.length + 8);
+  answer.set(data, name.length + 10);
+  return answer;
+}
+
 /** Build a controlled DNS response using the query's ID and complete question. */
-function dnsResponse(queryInput: Uint8Array, addresses: string[], flags = 0x8180): Uint8Array {
+function dnsMessage(queryInput: Uint8Array, answers: Buffer[], flags = 0x8180): Uint8Array {
   const query = Buffer.from(queryInput);
-  const type = query.readUInt16BE(query.length - 4);
   const header = Buffer.alloc(12);
   query.copy(header, 0, 0, 2);
   header.writeUInt16BE(flags, 2);
   header.writeUInt16BE(1, 4);
-  header.writeUInt16BE(addresses.length, 6);
-  const answers = addresses.map((address) => {
-    const data = type === 1 ? address.split(".").map(Number) : ipv6Bytes(address);
-    const answer = Buffer.alloc(12 + data.length);
-    answer.writeUInt16BE(0xc00c, 0);
-    answer.writeUInt16BE(type, 2);
-    answer.writeUInt16BE(1, 4);
-    answer.writeUInt16BE(data.length, 10);
-    answer.set(data, 12);
-    return answer;
-  });
+  header.writeUInt16BE(answers.length, 6);
   return Buffer.concat([header, query.subarray(12), ...answers]);
+}
+
+function dnsResponse(query: Uint8Array, addresses: string[], flags = 0x8180): Uint8Array {
+  const type = Buffer.from(query).readUInt16BE(query.length - 4);
+  return dnsMessage(query, addresses.map((address) => dnsAnswer("proxy.example", type, addressData(type, address))), flags);
 }
 
 function fakeDoh(respond: (call: DohCall) => Response | Promise<Response>) {
@@ -82,6 +105,10 @@ function dohResponse(call: DohCall, addresses: string[], status = 200): Response
     status,
     headers: { "content-type": "application/dns-message" },
   });
+}
+
+function queryType(call: DohCall): number {
+  return Buffer.from(call.query).readUInt16BE(call.query.length - 4);
 }
 
 async function rejection(promise: Promise<unknown>): Promise<FreeWebError> {
@@ -557,6 +584,86 @@ describe("assertPublicHttpUrl: DNS-over-HTTPS", () => {
     },
   );
 
+  it.each([
+    "::10.0.0.1",
+    "::169.254.169.254",
+    "::ffff:0:169.254.169.254",
+    "::ffff:127.0.0.1",
+    "0:0:0:0:0:0:A00:0001",
+    "0:0:0:0:0:0:A9FE:A9FE",
+    "0:0:0:0:FFFF:0:A9FE:A9FE",
+    "0:0:0:0:0:FFFF:7F00:0001",
+  ])("rejects decoded IPv4-embedding IPv6 DoH answer %s", async (address) => {
+    const { lookupFn } = fakeLookup(["198.18.0.1"]);
+    const { dohFetchFn } = fakeDoh((call) => dohResponse(call, queryType(call) === 1 ? [] : [address]));
+    const error = await expectCode("https://proxy.example/", "FAKE_IP_DNS_UNVERIFIED", {
+      lookupFn,
+      trustedDnsServers: [endpoint],
+      dohFetchFn,
+    });
+    expect(error.options.retryable).toBe(true);
+  });
+
+  it("rejects an unrelated-owner address even beside a valid direct answer", async () => {
+    const { lookupFn } = fakeLookup(["198.18.0.1"]);
+    const { dohFetchFn, calls } = fakeDoh((call) => {
+      const type = queryType(call);
+      const answers = type === 1 ? [
+        dnsAnswer("proxy.example", type, addressData(type, PUBLIC_V4)),
+        dnsAnswer("unrelated.example", type, addressData(type, "8.8.8.8")),
+      ] : [];
+      return new Response(dnsMessage(call.query, answers), {
+        headers: { "content-type": "application/dns-message" },
+      });
+    });
+    const error = await expectCode("https://proxy.example/", "FAKE_IP_DNS_UNVERIFIED", {
+      lookupFn,
+      trustedDnsServers: [endpoint],
+      dohFetchFn,
+    });
+    expect(error.options.retryable).toBe(true);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("accepts an address owned by a CNAME target reachable from the query", async () => {
+    const { lookupFn } = fakeLookup(["198.18.0.1"]);
+    const { dohFetchFn } = fakeDoh((call) => {
+      const type = queryType(call);
+      const answers = type === 1 ? [
+        dnsAnswer("proxy.example", 5, encodeDnsName("alias.example")),
+        dnsAnswer("alias.example", type, addressData(type, PUBLIC_V4)),
+      ] : [];
+      return new Response(dnsMessage(call.query, answers), {
+        headers: { "content-type": "application/dns-message" },
+      });
+    });
+    await expect(assertPublicHttpUrl("https://proxy.example/", {
+      lookupFn,
+      trustedDnsServers: [endpoint],
+      dohFetchFn,
+    })).resolves.toBeInstanceOf(URL);
+  });
+
+  it("aborts an oversized streaming body with no Content-Length while reading", async () => {
+    const { lookupFn } = fakeLookup(["198.18.0.1"]);
+    const { dohFetchFn, calls } = fakeDoh(() => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(65_536));
+        },
+      });
+      return new Response(body, { headers: { "content-type": "application/dns-message" } });
+    });
+    const error = await expectCode("https://proxy.example/", "FAKE_IP_DNS_UNVERIFIED", {
+      lookupFn,
+      trustedDnsServers: [endpoint],
+      dohFetchFn,
+    });
+    expect(error.options.retryable).toBe(true);
+    expect(calls).toHaveLength(2);
+    expect(calls.every((call) => call.init?.signal?.aborted)).toBe(true);
+  });
+
   it("rejects a mix of public and private DoH answers", async () => {
     const { lookupFn } = fakeLookup(["198.18.0.1"]);
     const { dohFetchFn } = fakeDoh((call) => {
@@ -694,6 +801,14 @@ describe("isPrivateHostname", () => {
     "2001:db8::1",
     "::ffff:127.0.0.1",
     "::ffff:7f00:1",
+    "::10.0.0.1",
+    "::169.254.169.254",
+    "::ffff:0:169.254.169.254",
+    "0:0:0:0:0:0:A00:0001",
+    "0:0:0:0:0:0:A9FE:A9FE",
+    "0:0:0:0:FFFF:0:A9FE:A9FE",
+    "0:0:0:0:0:FFFF:7F00:0001",
+    "::FFFF:0:169.254.169.254",
   ])("treats %s as private", (hostname) => {
     expect(isPrivateHostname(hostname)).toBe(true);
   });
@@ -705,6 +820,8 @@ describe("isPrivateHostname", () => {
     PUBLIC_V6,
     "2001:4860:4860::8888",
     "::ffff:8.8.8.8",
+    "::8.8.8.8",
+    "::FFFF:0:8.8.8.8",
   ])("treats %s as public", (hostname) => {
     expect(isPrivateHostname(hostname)).toBe(false);
   });

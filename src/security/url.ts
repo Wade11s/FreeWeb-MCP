@@ -2,6 +2,7 @@ import { lookup, Resolver } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
 import { FreeWebError } from "../errors.js";
 import { resolveDoh, type DohFetchFn } from "./doh.js";
+import { canonicalizeIpAddress } from "./ip-address.js";
 
 /**
  * Address space that must never be reachable through a "public" URL.
@@ -65,7 +66,8 @@ function normalizeHostname(hostnameInput: string): string {
 
 export function isPublicIpLiteral(hostnameInput: string): boolean {
   if (hostnameInput !== hostnameInput.trim() || /[\[\]%]/.test(hostnameInput)) return false;
-  return isIP(hostnameInput) !== 0 && !isPrivateHostname(hostnameInput);
+  const address = canonicalizeIpAddress(hostnameInput);
+  return address !== undefined && !isPrivateHostname(address.address);
 }
 
 /** A DoH endpoint must not need system DNS or carry credentials/query data. */
@@ -90,13 +92,12 @@ export function isTrustedDnsServer(server: string): boolean {
   return isPublicIpLiteral(server) || isDohEndpoint(server);
 }
 
-function isFakeIpAddress(address: string): boolean {
-  const hostname = normalizeHostname(address);
-  const family = isIP(hostname);
-  if (family === 4) return FAKE_IP.check(hostname, "ipv4");
-  // BlockList folds IPv4-mapped IPv6 addresses before matching, just as it
-  // does for the private-address policy above.
-  return family === 6 && FAKE_IP.check(hostname, "ipv6");
+function isFakeIpAddress(input: string): boolean {
+  const address = canonicalizeIpAddress(normalizeHostname(input));
+  if (!address) return false;
+  if (address.family === 4) return FAKE_IP.check(address.address, "ipv4");
+  if (address.embeddedIpv4 && FAKE_IP.check(address.embeddedIpv4, "ipv4")) return true;
+  return FAKE_IP.check(address.address, "ipv6");
 }
 
 export function isPrivateHostname(hostnameInput: string): boolean {
@@ -106,32 +107,13 @@ export function isPrivateHostname(hostnameInput: string): boolean {
     return true;
   }
 
-  const compatible = hostname.match(/^::(\d+\.\d+\.\d+\.\d+)$/);
-  if (compatible) return BLOCKED.check(compatible[1], "ipv4");
-  const compatibleHex = hostname.match(/^::([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
-  if (compatibleHex) {
-    const value = ((Number.parseInt(compatibleHex[1], 16) << 16) | Number.parseInt(compatibleHex[2], 16)) >>> 0;
-    const dotted = [(value >>> 24) & 255, (value >>> 16) & 255, (value >>> 8) & 255, value & 255].join(".");
-    return BLOCKED.check(dotted, "ipv4");
-  }
-  const compatibleSingle = hostname.match(/^::([0-9a-f]{1,4})$/i);
-  if (compatibleSingle) {
-    const value = Number.parseInt(compatibleSingle[1], 16) >>> 0;
-    const dotted = [(value >>> 24) & 255, (value >>> 16) & 255, (value >>> 8) & 255, value & 255].join(".");
-    return BLOCKED.check(dotted, "ipv4");
-  }
-  // Translation-specific forms are rejected explicitly instead of using a
-  // broad BlockList /96, which would fold and reject every IPv4 address.
-  if (hostname.startsWith("::ffff:0:")) return true;
-  const family = isIP(hostname);
-  if (family === 4) return BLOCKED.check(hostname, "ipv4");
-  if (family === 6) {
-    // BlockList folds IPv4-mapped IPv6 addresses (::ffff:0:0/96, dotted or hex
-    // form) into the IPv4 space before matching, so this also covers
-    // ::ffff:127.0.0.1 and ::ffff:7f00:1.
-    return BLOCKED.check(hostname, "ipv6");
-  }
-  return false;
+  const address = canonicalizeIpAddress(hostname);
+  if (!address) return false;
+  if (address.family === 4) return BLOCKED.check(address.address, "ipv4");
+  // Compatible, mapped and SIIT/translated IPv6 all authorize according to
+  // their embedded IPv4 address, regardless of textual padding or dotted form.
+  if (address.embeddedIpv4 && BLOCKED.check(address.embeddedIpv4, "ipv4")) return true;
+  return BLOCKED.check(address.address, "ipv6");
 }
 
 export type TrustedLookupFn = (
